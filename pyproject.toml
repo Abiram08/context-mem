@@ -1,0 +1,19 @@
+[project]
+name = "contextvault"
+version = "0.1.0"
+description = "Local-first MCP memory vault for coding agents (SQLite + FTS5)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp>=2.0.0",
+]
+
+[project.scripts]
+contextvault = "server:main"
+
+[tool.setuptools]
+py-modules = ["server", "storage", "ranking", "context_engine"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
