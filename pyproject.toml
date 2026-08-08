@@ -12,7 +12,7 @@ dependencies = [
 contextvault = "server:main"
 
 [tool.setuptools]
-py-modules = ["server", "storage", "ranking", "context_engine"]
+py-modules = ["server", "storage", "ranking", "context_engine", "compression"]
 
 [build-system]
 requires = ["setuptools>=68"]

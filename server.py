@@ -14,6 +14,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from compression import DEFAULT_TOKEN_BUDGET, extractive_compress
 from context_engine import MEMORY_KINDS
 from ranking import recall as rank_recall
 from storage import MemoryStore, SQLiteStore, default_db_path, open_store
@@ -56,30 +57,58 @@ def _err(message: str) -> dict[str, Any]:
     return {"ok": False, "error": message}
 
 
+def _resolve_budget(token_budget: int | None) -> int:
+    """Working-context token budget: explicit arg > env > default."""
+    if token_budget is not None:
+        budget = int(token_budget)
+    else:
+        env_b = os.environ.get("CONTEXTVAULT_TOKEN_BUDGET")
+        try:
+            budget = int(env_b) if env_b else DEFAULT_TOKEN_BUDGET
+        except ValueError:
+            budget = DEFAULT_TOKEN_BUDGET
+    if not 256 <= budget <= 16_000:
+        raise ValueError("token_budget must be an integer from 256 to 16000")
+    return budget
+
+
 @mcp.tool()
-def start(agent_id: str, session_id: str | None = None) -> dict[str, Any]:
+def start(
+    agent_id: str,
+    session_id: str | None = None,
+    token_budget: int | None = None,
+) -> dict[str, Any]:
     """Open or resume a local coding-agent memory session.
 
-    Call once at the start of work. Returns a **context pack** tuned for small
-    codebases: high-signal anchors (architecture, decisions, conventions,
-    file maps) so you recover project shape without scanning the whole vault.
+    Call once at the start of work. Returns a **token-budgeted working
+    context** for small codebases: every stored memory is represented — hot
+    memories verbatim, the rest extractively compressed, plus an index of
+    every stored path/symbol — so you recover the whole project shape for a
+    fraction of the token cost. See context_pack for details.
 
     Args:
         agent_id: Stable id for this agent or repo context
             (e.g. "claude-code", "cursor", "repo:my-app").
         session_id: Optional existing session to resume. Omit to start fresh.
+        token_budget: Max tokens for the working-context pack (256–16000).
+            Default 1200; env override CONTEXTVAULT_TOKEN_BUDGET.
 
     Returns:
-        session_id, summary, memory_count, and context_pack (anchors + guidance).
-        All data is local SQLite only.
+        session_id, summary, memory_count, and context_pack (verbatim +
+        compressed + coverage index). All data is local SQLite only.
     """
     global _active_agent_id, _active_session_id
     try:
         if not agent_id or not str(agent_id).strip():
             return _err("agent_id is required and must be non-empty")
 
+        budget = _resolve_budget(token_budget)
         store = _get_store()
-        info = store.start_session(str(agent_id).strip(), session_id)
+        info = store.start_session(
+            str(agent_id).strip(),
+            session_id,
+            token_budget=budget,
+        )
         _active_agent_id = info.agent_id
         _active_session_id = info.session_id
 
@@ -170,6 +199,7 @@ def recall(
     limit: int = 5,
     kind: str | None = None,
     path: str | None = None,
+    compact: bool = False,
 ) -> dict[str, Any]:
     """Retrieve the most relevant **local** coding memories for a task.
 
@@ -184,6 +214,9 @@ def recall(
         limit: Max results (default 5, max 50).
         kind: Optional filter: decision, file_map, bug, convention, etc.
         path: Optional path substring filter (e.g. "src/middleware").
+        compact: When true, return extractively-compressed snippets (~220
+            tokens each) instead of full content — cheaper for the context
+            window; recall() again without compact for full detail.
 
     Returns:
         Ranked memories with scores, match reasons (`why`), and signal breakdown.
@@ -213,12 +246,22 @@ def recall(
         # Usage feedback for sticky high-value memories
         store.mark_accessed([r.memory.id for r in ranked])
 
+        out: list[dict[str, Any]] = []
+        for r in ranked:
+            d = r.to_dict()
+            if compact:
+                text, dropped, _used = extractive_compress(d["content"], 220, memory=r.memory)
+                d["content"] = text
+                d["compressed"] = True
+                d["dropped_segments"] = dropped
+            out.append(d)
+
         return {
             "ok": True,
             "query": query,
             "count": len(ranked),
             "storage": "local_sqlite",
-            "memories": [r.to_dict() for r in ranked],
+            "memories": out,
         }
     except RuntimeError as e:
         return _err(str(e))

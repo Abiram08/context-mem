@@ -18,6 +18,17 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from compression import (
+    DEFAULT_TOKEN_BUDGET,
+    INDEX_RESERVE,
+    MAX_VERBATIM,
+    MIN_PER_MEMORY,
+    VERBATIM_RATIO,
+    collapse_redundant,
+    estimate_tokens,
+    extractive_compress,
+)
+
 # ---------------------------------------------------------------------------
 # Memory kinds (coding-agent ontology)
 # ---------------------------------------------------------------------------
@@ -202,11 +213,6 @@ _PACK_KIND_ORDER: list[str] = [
     "todo",
     "context",
 ]
-
-# Soft cap for context packs — small repos don't need huge dumps
-DEFAULT_PACK_LIMIT = 14
-MAX_PER_KIND_IN_PACK = 3
-
 
 # ---------------------------------------------------------------------------
 # Extraction / normalization
@@ -493,13 +499,13 @@ def score_memory(
     if tags_l:
         bd.tag = 0.08 * min(1.0, tag_hits / max(1, min(3, len(tags_l))))
         if tag_hits:
-            reasons.append(f"tags×{tag_hits}")
+            reasons.append(f"tags*{tag_hits}")
 
     # --- Kind / intent ---
     kind_boosts = _INTENT_KIND_BOOSTS.get(intent, {})
     bd.kind = kind_boosts.get(kind, 0.0)
     if bd.kind > 0:
-        reasons.append(f"intent:{intent}→{kind}")
+        reasons.append(f"intent:{intent}->{kind}")
 
     # --- Importance ---
     bd.importance = 0.12 * (importance / 5.0)
@@ -557,14 +563,26 @@ def diversify(
 
 @dataclass
 class ContextPack:
-    """Dense working context for a coding agent at session start."""
+    """Token-budgeted working context for a coding agent at session start.
+
+    Two tiers + a coverage index so *every* memory is represented cheaply:
+    verbatim hot memories, extractively compressed remainder, and an index
+    of every stored path/symbol not already mentioned in text.
+    """
 
     agent_id: str
     memory_count: int
     summary: str
     by_kind: dict[str, int]
-    anchors: list[dict[str, Any]]  # high-signal memories to load into context
+    anchors: list[dict[str, Any]]  # verbatim + compressed (both tiers)
     guidance: list[str]
+    token_budget: int = DEFAULT_TOKEN_BUDGET
+    tokens_used: int = 0
+    coverage: float = 1.0  # fraction of (collapsed) memories in the pack
+    collapsed: int = 0  # duplicate memories merged at pack time
+    verbatim: list[dict[str, Any]] = field(default_factory=list)  # hot tier
+    compressed: list[dict[str, Any]] = field(default_factory=list)  # distilled
+    index: dict[str, Any] = field(default_factory=dict)  # paths/symbols/kinds
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -574,7 +592,68 @@ class ContextPack:
             "by_kind": self.by_kind,
             "anchors": self.anchors,
             "guidance": self.guidance,
+            "token_budget": self.token_budget,
+            "tokens_used": self.tokens_used,
+            "coverage": round(self.coverage, 4),
+            "collapsed": self.collapsed,
+            "verbatim": self.verbatim,
+            "compressed": self.compressed,
+            "index": self.index,
         }
+
+
+def _get(m: Any, key: str, default: Any = None) -> Any:
+    """Attribute-or-key access that works for dataclasses and dicts."""
+    if isinstance(m, dict):
+        return m.get(key, default)
+    return getattr(m, key, default)
+
+
+def _memory_dict(m: Any) -> dict[str, Any]:
+    if hasattr(m, "to_dict"):
+        return m.to_dict()
+    if isinstance(m, dict):
+        return m
+    return {
+        k: _get(m, k)
+        for k in (
+            "id", "agent_id", "kind", "importance", "paths",
+            "symbols", "tags", "content", "created_at",
+        )
+    }
+
+
+def _pack_score(m: Any) -> tuple[float, str]:
+    """Rank memories for the verbatim tier: kind priority + importance + usage."""
+    kind = _get(m, "kind", "context")
+    try:
+        kind_rank = _PACK_KIND_ORDER.index(kind)
+    except ValueError:
+        kind_rank = len(_PACK_KIND_ORDER)
+    imp = int(_get(m, "importance", 3))
+    access = int(_get(m, "access_count", 0))
+    score = (6 - min(kind_rank, 5)) * 1.2 + imp * 1.0 + min(access, 8) * 0.15
+    # "YYYY-MM-DD HH:MM:SS" sorts lexically; newer wins ties.
+    created = str(_get(m, "created_at", ""))
+    return score, created
+
+
+def _distinct_values(memories: list[Any], key: str) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in memories:
+        for v in (_get(m, key, None) or []):
+            k = str(v).lower()
+            if k not in seen:
+                seen.add(k)
+                out.append(str(v))
+    return out
+
+
+def _unmentioned(path_or_symbol: str, mentioned: str) -> bool:
+    norm = path_or_symbol.lower().replace("\\", "/")
+    base = norm.rsplit("/", 1)[-1]
+    return norm not in mentioned and base not in mentioned
 
 
 def build_context_pack(
@@ -582,16 +661,19 @@ def build_context_pack(
     memories: list[Any],
     *,
     is_new_agent: bool,
-    limit: int = DEFAULT_PACK_LIMIT,
+    token_budget: int = DEFAULT_TOKEN_BUDGET,
 ) -> ContextPack:
-    """Build a session-start pack for a small codebase.
+    """Build a token-budgeted working context for a small codebase.
 
-    Prefers architecture → decisions → conventions → file maps so agents
-    recover project shape quickly without stuffing the whole vault.
+    Two tiers + a coverage index, so *every* memory is represented cheaply:
+      1. Verbatim   — the top few high-signal memories, kept word-for-word.
+      2. Compressed — everything else, extractively distilled per-memory.
+      3. Index      — every stored path/symbol not already mentioned in the
+                      pack text, so no fact silently vanishes from the view.
     """
     by_kind: dict[str, int] = defaultdict(int)
     for m in memories:
-        by_kind[getattr(m, "kind", "context")] += 1
+        by_kind[_get(m, "kind", "context")] += 1
 
     if is_new_agent or not memories:
         summary = (
@@ -613,65 +695,94 @@ def build_context_pack(
             by_kind={},
             anchors=[],
             guidance=guidance,
-        )
-
-    # Score each memory for pack inclusion (importance + kind priority + usage)
-    ranked: list[tuple[float, Any]] = []
-    for m in memories:
-        kind = getattr(m, "kind", "context")
-        try:
-            kind_rank = _PACK_KIND_ORDER.index(kind)
-        except ValueError:
-            kind_rank = len(_PACK_KIND_ORDER)
-        imp = int(getattr(m, "importance", 3))
-        access = int(getattr(m, "access_count", 0))
-        # Higher is better
-        score = (6 - min(kind_rank, 5)) * 1.2 + imp * 1.0 + min(access, 8) * 0.15
-        ranked.append((score, m))
-    ranked.sort(key=lambda x: x[0], reverse=True)
-
-    # Diversify by kind for a balanced pack
-    picked: list[Any] = []
-    kind_counts: dict[str, int] = defaultdict(int)
-    for _score, m in ranked:
-        kind = getattr(m, "kind", "context")
-        if kind_counts[kind] >= MAX_PER_KIND_IN_PACK:
-            continue
-        picked.append(m)
-        kind_counts[kind] += 1
-        if len(picked) >= limit:
-            break
-
-    anchors: list[dict[str, Any]] = []
-    for m in picked:
-        if hasattr(m, "to_dict"):
-            d = m.to_dict()
-        else:
-            d = dict(m)
-        # Compact anchor for agent context windows
-        anchors.append(
-            {
-                "id": d.get("id"),
-                "kind": d.get("kind", "context"),
-                "importance": d.get("importance", 3),
-                "paths": d.get("paths") or [],
-                "symbols": d.get("symbols") or [],
-                "tags": d.get("tags") or [],
-                "content": d.get("content", ""),
-            }
+            token_budget=token_budget,
+            tokens_used=0,
+            coverage=1.0,
+            collapsed=0,
+            verbatim=[],
+            compressed=[],
+            index={"paths": [], "symbols": [], "kinds": {}},
         )
 
     total = len(memories)
+    collapsed, n_collapsed = collapse_redundant(memories)
+    ranked = sorted(collapsed, key=_pack_score, reverse=True)
+
+    # --- Tier 1: verbatim hot memories -------------------------------
+    verbatim_budget = max(48, int(token_budget * VERBATIM_RATIO))
+    per_verbatim = max(48, verbatim_budget // MAX_VERBATIM)
+    verbatim: list[Any] = []
+    rest: list[Any] = []
+    for m in ranked:
+        if len(verbatim) < MAX_VERBATIM and estimate_tokens(_get(m, "content", "")) <= per_verbatim:
+            verbatim.append(m)
+        else:
+            rest.append(m)
+
+    # --- Tier 2: compress everything else within remaining budget -----
+    verbatim_tokens = sum(estimate_tokens(_get(m, "content", "")) for m in verbatim)
+    compressible = max(0, token_budget - verbatim_tokens - INDEX_RESERVE)
+    per_memory = max(MIN_PER_MEMORY, compressible // max(1, len(rest)))
+
+    verbatim_dicts: list[dict[str, Any]] = []
+    compressed: list[dict[str, Any]] = []
+    mentioned_chunks: list[str] = []
+    for m in verbatim:
+        d = _memory_dict(m)
+        verbatim_dicts.append(
+            {**d, "verbatim": True, "tokens": estimate_tokens(d.get("content", ""))}
+        )
+        mentioned_chunks.append(d.get("content", ""))
+    for m in rest:
+        content = _get(m, "content", "")
+        text, dropped, used = extractive_compress(content, per_memory, memory=m)
+        if not text:
+            continue
+        d = _memory_dict(m)
+        compressed.append(
+            {
+                **d,
+                "content": text,
+                "verbatim": False,
+                "tokens": used,
+                "dropped_segments": dropped,
+            }
+        )
+        mentioned_chunks.append(text)
+
+    # --- Coverage index: every stored path/symbol stays reachable ------
+    mentioned = " ".join(mentioned_chunks).lower()
+    all_paths = _distinct_values(collapsed, "paths")
+    all_symbols = _distinct_values(collapsed, "symbols")
+    index = {
+        "paths": [p for p in all_paths if _unmentioned(p, mentioned)],
+        "symbols": [s for s in all_symbols if s.lower() not in mentioned],
+        "kinds": dict(by_kind),
+    }
+    index_tokens = estimate_tokens(
+        " ".join(index["paths"]) + " " + " ".join(index["symbols"])
+    )
+
+    tokens_used = (
+        verbatim_tokens + sum(c["tokens"] for c in compressed) + index_tokens
+    )
+    anchors = [*verbatim_dicts, *compressed]
+    coverage = (len(verbatim) + len(compressed)) / max(1, len(collapsed))
+
     kind_bits = ", ".join(f"{k}={by_kind[k]}" for k in _PACK_KIND_ORDER if by_kind.get(k))
     summary = (
-        f"Resuming coding-agent vault {agent_id!r}: {total} local memories"
-        f"{f' ({kind_bits})' if kind_bits else ''}. "
-        f"Loaded {len(anchors)} high-signal anchors for this small-codebase session."
+        f"Resuming coding-agent vault {agent_id!r}: {total} memories"
+        f" ({kind_bits}). {len(verbatim)} verbatim + {len(compressed)} "
+        f"compressed = {tokens_used}/{token_budget} tokens, "
+        f"{coverage:.0%} coverage"
+        + (f", {n_collapsed} duplicate(s) merged" if n_collapsed else "")
+        + ". Every stored path/symbol is reachable via the index."
     )
     guidance = [
-        "Use anchors below as durable project truth; call recall() for task-specific hits.",
+        "Working context is token-budgeted: `verbatim` anchors are hot memories — treat as exact.",
+        "`compressed` anchors are distilled notes (+N more = sentences dropped); call recall() for full detail.",
+        "`index.paths`/`index.symbols` cover every stored path/symbol — use recall(path=...) to drill in.",
         "Update the vault with remember() when you discover new decisions, paths, or bugs.",
-        "Path-tagged memories rank higher for 'where is…' questions — keep paths filled in.",
     ]
     return ContextPack(
         agent_id=agent_id,
@@ -680,6 +791,13 @@ def build_context_pack(
         by_kind=dict(by_kind),
         anchors=anchors,
         guidance=guidance,
+        token_budget=token_budget,
+        tokens_used=tokens_used,
+        coverage=coverage,
+        collapsed=n_collapsed,
+        verbatim=verbatim_dicts,
+        compressed=compressed,
+        index=index,
     )
 
 

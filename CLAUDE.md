@@ -52,6 +52,8 @@ explicitly asked — the value here is that it's small, sharp, and reliable.
 contextvault/
   server.py          # FastMCP server entrypoint, tool definitions
   storage.py          # Storage interface + SQLite implementation
+  compression.py      # Token estimator, segment splitting, extractive compression, dedupe
+  context_engine.py   # Kinds, extraction, scoring, token-budgeted working-context packs
   ranking.py          # FTS5 query + relevance/importance scoring for recall
   schema.sql           # SQLite schema (agents, sessions, memories tables)
   test_client.py       # Standalone script that starts the server, calls all 3 tools, prints results
@@ -92,12 +94,14 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(content, content='memories', conten
    before touching MCP at all.
 2. `ranking.py` — FTS5 query wired to `memories_fts`, returning ranked results with a
    combined relevance + importance score.
-3. `server.py` — wrap the storage/ranking logic in the three FastMCP tools. Follow
-   FastMCP's decorator pattern (`@mcp.tool()`).
-4. `test_client.py` — a script that: starts a session, remembers 3-4 things, recalls
+3. `context_engine.py` — kinds, path/symbol extraction, intent routing, scoring, and the
+   **token-budgeted working context** (`build_context_pack`): every memory represented as
+   verbatim hot notes + extractively compressed notes + a coverage index of all
+   paths/symbols, within a token budget (default 1200, see `compression.py` knobs).
+4. `server.py` — wrap the storage/ranking/compression logic in the three FastMCP tools.
+   Follow FastMCP's decorator pattern (`@mcp.tool()`).
+5. `test_client.py` — a script that: starts a session, remembers 3-4 things, recalls
    against a query, and prints what came back. This is the thing to run to prove it works.
-5. `README.md` — clear install + run + "connect this to Claude Code" instructions. Include
-   the exact MCP client config JSON block (see below).
 6. Only after all of the above works end-to-end: consider the optional embedding re-rank.
 
 ## MCP client config (for the README, and for testing locally)

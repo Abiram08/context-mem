@@ -19,6 +19,14 @@ if str(ROOT) not in sys.path:
 
 
 def main() -> int:
+    # Windows consoles often default to cp1252; force UTF-8 for smoke output.
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+
     with tempfile.TemporaryDirectory(
         prefix="contextvault-test-",
         ignore_cleanup_errors=True,
@@ -48,6 +56,12 @@ def main() -> int:
         print(f"    session_id : {started['session_id']}")
         print(f"    storage    : {started['storage']}")
         print(f"    summary    : {started['summary'][:100]}...")
+        pack0 = started["context_pack"]
+        assert pack0["token_budget"] == 1200
+        assert pack0["tokens_used"] <= pack0["token_budget"] + 32
+        assert pack0["coverage"] == 1.0
+        print(f"    pack       : {pack0['tokens_used']}/{pack0['token_budget']} tokens")
+        print(f"                 coverage={pack0['coverage']} verbatim={len(pack0['verbatim'])} compressed={len(pack0['compressed'])}")
 
         # --- remember (structured coding memories) ---
         samples = [
@@ -113,7 +127,7 @@ def main() -> int:
             },
         ]
 
-        print("\n[2] remember() × 6 (structured kinds/paths)")
+        print("\n[2] remember() x 6 (structured kinds/paths)")
         for i, s in enumerate(samples, 1):
             result = server.remember(
                 content=s["content"],
@@ -148,7 +162,7 @@ def main() -> int:
             ("conventional commits type hints", "convention", None),
         ]
 
-        print("\n[3] recall() — small-codebase context engine")
+        print("\n[3] recall() - small-codebase context engine")
         for q, expect_kind, path_filter in cases:
             result = server.recall(query=q, limit=3, path=path_filter)
             _assert_ok(result, f"recall:{q}")
@@ -174,8 +188,16 @@ def main() -> int:
             "see src/middleware/auth.ts for JWT"
         )
 
+        # --- compact recall (token-cheap snippets) ---
+        compact = server.recall(
+            query="where is auth middleware", limit=3, compact=True
+        )
+        _assert_ok(compact, "recall-compact")
+        assert compact["memories"][0]["compressed"] is True
+        print("    compact recall: snippets compressed ok")
+
         # --- resume + context pack ---
-        print("\n[4] resume agent — context pack anchors")
+        print("\n[4] resume agent - context pack anchors")
         server._active_agent_id = None
         server._active_session_id = None
         resumed = server.start(agent_id="coding-agent-demo")
@@ -184,23 +206,36 @@ def main() -> int:
         assert resumed["memory_count"] >= 6
         pack = resumed["context_pack"]
         assert pack["memory_count"] >= 6
-        assert len(pack["anchors"]) >= 3
+        assert len(pack["anchors"]) >= 6
+        assert len(pack["verbatim"]) >= 1
+        assert len(pack["compressed"]) >= 1
+        assert len(pack["anchors"]) == len(pack["verbatim"]) + len(pack["compressed"])
+        assert pack["coverage"] >= 0.99
+        assert pack["tokens_used"] <= pack["token_budget"] + 32
+        # Every stored path is reachable: mentioned in pack text or in the index.
+        pack_text = " ".join(a.get("content", "") for a in pack["anchors"]).lower()
+        stored_paths = {p for s in samples if s.get("paths") for p in s["paths"]}
+        for p in stored_paths:
+            assert (
+                p in pack["index"]["paths"] or p in pack_text
+            ), f"stored path {p!r} not reachable in pack"
         print(f"    memory_count: {resumed['memory_count']}")
         print(f"    by_kind     : {pack['by_kind']}")
-        print(f"    anchors     : {len(pack['anchors'])}")
-        print(f"    summary     : {pack['summary'][:120]}...")
+        print(f"    tokens      : {pack['tokens_used']}/{pack['token_budget']}")
+        print(f"    coverage    : {pack['coverage']:.0%}  verbatim={len(pack['verbatim'])} compressed={len(pack['compressed'])} index_paths={len(pack['index']['paths'])}")
+        print(f"    summary     : {pack['summary'][:150]}...")
 
         # --- errors ---
         print("\n[5] error handling")
         bad = server.remember(content="")
         assert bad["ok"] is False
-        print(f"    empty content → {bad['error']}")
+        print(f"    empty content -> {bad['error']}")
 
         server._active_agent_id = None
         server._active_session_id = None
         no_sess = server.recall(query="anything")
         assert no_sess["ok"] is False
-        print(f"    no session    → {no_sess['error']}")
+        print(f"    no session    -> {no_sess['error']}")
 
         store = storage.open_store(db_path)
         assert store.count_memories("coding-agent-demo") >= 6
@@ -212,8 +247,52 @@ def main() -> int:
         server._active_agent_id = None
         server._active_session_id = None
 
+        # --- compression units (offline, deterministic) ---
+        print("\n[6] compression units")
+        from compression import (
+            collapse_redundant,
+            estimate_tokens,
+            extractive_compress,
+            split_segments,
+        )
+        from storage import Memory
+
+        assert estimate_tokens("") == 0
+        assert estimate_tokens("a" * 500) > estimate_tokens("a" * 50)
+        segs = split_segments(
+            "Auth middleware lives in src/middleware/auth.ts. "
+            "It verifies JWT (15m). e.g. one more sentence."
+        )
+        assert len(segs) >= 2, segs
+        assert any("src/middleware/auth.ts" in s for s in segs)
+        text, dropped, used = extractive_compress(
+            "First signal sentence. Second is filler. Third filler too.", 12
+        )
+        assert used <= 12 + 4, (text, used)
+        m1 = Memory(
+            id=1, agent_id="a",
+            content="The auth middleware lives in src/middleware/auth.ts and checks JWT access tokens.",
+            kind="file_map", tags=[], paths=["src/middleware/auth.ts"],
+            symbols=["verifyJwt"], importance=4,
+            created_at="2026-01-01 00:00:00",
+        )
+        m2 = Memory(
+            id=2, agent_id="a",
+            content="The auth middleware is in src/middleware/auth.ts; it verifies JWT access tokens.",
+            kind="file_map", tags=[], paths=["src/middleware/auth.ts"],
+            symbols=[], importance=3,
+            created_at="2026-01-02 00:00:00",
+        )
+        merged, removed = collapse_redundant([m1, m2])
+        assert removed == 1 and len(merged) == 1
+        assert "verifyJwt" in merged[0].symbols  # union preserved
+        print(f"    estimate_tokens monotonic   : ok")
+        print(f"    split_segments path-safe    : {len(segs)} segments")
+        print(f"    extractive_compress budget  : {used} tokens, {dropped} dropped")
+        print(f"    collapse_redundant          : {removed} duplicate merged (symbol union kept)")
+
         print("\n" + "=" * 60)
-        print("All checks passed ✓  (local storage + context engine)")
+        print("All checks passed (local storage + context engine)")
         print("=" * 60)
         return 0
 

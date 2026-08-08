@@ -32,7 +32,7 @@ python test_client.py
 
 | Tool | What it does |
 |------|----------------|
-| `start(agent_id, session_id?)` | Open/resume session; returns a **context pack** (architecture, decisions, file maps, …) |
+| `start(agent_id, session_id?, token_budget?)` | Open/resume session; returns a **token-budgeted working context** (verbatim + compressed + coverage index) |
 | `remember(content, kind?, tags?, paths?, symbols?, importance?)` | Store a durable coding memory **locally** |
 | `recall(query, limit?, kind?, path?)` | Multi-signal retrieval with match reasons |
 
@@ -45,11 +45,36 @@ python test_client.py
 For repos under ~50k lines, dense structured memory beats huge chat dumps:
 
 1. **FTS5** (porter tokenizer) over a denormalized `search_doc` (content + kind + tags + paths + symbols)
-2. **Path / symbol / tag** boosts — “where is auth?” prefers `file_map` + path hits
+2. **Path / symbol / tag** boosts — "where is auth?" prefers `file_map` + path hits
 3. **Intent routing** — why/bug/style/locate queries boost the right kinds
 4. **Importance + usage** — critical and frequently recalled notes stick
-5. **Kind diversity** — results aren’t five near-duplicate decisions
-6. **Session context pack** — on `start()`, load a balanced set of anchors into the agent’s working set
+5. **Kind diversity** — results aren't five near-duplicate decisions
+6. **Token-budgeted working context** — on `start()`, the WHOLE vault is represented: hot
+   memories verbatim, everything else extractively compressed, plus a coverage index of
+   every stored path/symbol. Nothing silently drops out of the agent's view.
+
+### Token economy (how “all context, fewer tokens” works)
+
+`compression.py` is fully local — no LLM, no embeddings, no network:
+
+- **Offline token estimator** — a deterministic, monotonic token count used as the
+  budget currency (swap for tiktoken later without changing callers).
+- **Two-tier pack** — up to `MAX_VERBATIM` (4) hot memories stay word-for-word; the rest
+  are **extractively compressed**: content is split into path/abbreviation-safe segments,
+  the highest-signal sentences (path/symbol/tag/importance-scored) are kept under a
+  per-memory budget, and the rest reported as `+N more`.
+- **Coverage index** — every stored path/symbol not already mentioned in pack text is
+  listed in `index.paths` / `index.symbols`, so the agent can always `recall(path=...)`
+  to drill into anything.
+- **Redundancy collapse** — near-duplicate memories (high token overlap, or shared path
+  with loose overlap) are merged at pack time: paths/symbols/tags union, max importance,
+  summed usage. Originals stay in the vault — `recall()` still sees them.
+- **Honest accounting** — every pack reports `tokens_used / token_budget` and `coverage`
+  (% of memories represented).
+
+Budget knobs: `start(..., token_budget=N)` (256–16000) or env `CONTEXTVAULT_TOKEN_BUDGET`
+(default 1200). `recall(..., compact=True)` returns ~220-token distilled snippets when
+you want cheap results.
 
 Everything above runs **locally**. No embeddings, no network for memory.
 
@@ -78,12 +103,23 @@ Optional custom DB path (still local):
 }
 ```
 
+Optional smaller/larger working-context budget (still local):
+
+```json
+{
+  "env": {
+    "CONTEXTVAULT_TOKEN_BUDGET": "800"
+  }
+}
+```
+
 ### Agent workflow
 
-1. `start` with `agent_id` = project name  
-2. Read `context_pack.anchors` as durable truth  
-3. `recall` before non-trivial edits  
-4. `remember` decisions, file maps, bugs, conventions (with `paths` when you can)
+1. `start` with `agent_id` = project name; read `context_pack` — `verbatim` anchors are
+   exact, `compressed` anchors are distilled (call `recall()` for full detail), and
+   `index.paths`/`index.symbols` cover every stored path/symbol.  
+2. `recall` before non-trivial edits — use `compact=True` when you only need cheap hits  
+3. `remember` decisions, file maps, bugs, conventions (with `paths` when you can)
 
 Example `remember`:
 
@@ -99,7 +135,8 @@ importance: 5
 ```
 schema.sql          SQLite schema + FTS5 (search_doc)
 storage.py          MemoryStore interface + SQLite (local)
-context_engine.py   Kinds, extraction, scoring, context packs
+compression.py      Token estimator, segment splitting, extractive compression, dedupe
+context_engine.py   Kinds, extraction, scoring, working-context packs
 ranking.py          FTS + multi-signal recall
 server.py           FastMCP entrypoint (3 tools)
 test_client.py      End-to-end smoke test
@@ -109,6 +146,19 @@ test_client.py      End-to-end smoke test
 
 - Python 3.11+
 - `fastmcp>=2.0.0`
+
+## Token-economy example
+
+A vault of 50 memories collapses to a working context like:
+
+```text
+4 verbatim + 46 compressed = 611/1200 tokens, 100% coverage, 3 duplicates merged
+index.paths:   src/middleware/auth.ts, lib/db/schema.sql, …
+index.symbols: verifyJwt, build_search_doc, …
+```
+
+Each compressed anchor carries `+N more` when sentences were dropped, so the agent
+knows when to `recall()` for the full note.
 
 ## License
 

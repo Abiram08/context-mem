@@ -22,6 +22,7 @@ from context_engine import (
     enrich_memory_fields,
     normalize_kind,
 )
+from compression import DEFAULT_TOKEN_BUDGET
 
 
 def _utc_now() -> str:
@@ -98,6 +99,8 @@ class MemoryStore(ABC):
         self,
         agent_id: str,
         session_id: str | None = None,
+        *,
+        token_budget: int = DEFAULT_TOKEN_BUDGET,
     ) -> SessionInfo:
         """Ensure agent exists; create or resume a session; return context pack."""
 
@@ -284,6 +287,8 @@ class SQLiteStore(MemoryStore):
         self,
         agent_id: str,
         session_id: str | None = None,
+        *,
+        token_budget: int = DEFAULT_TOKEN_BUDGET,
     ) -> SessionInfo:
         agent_id = agent_id.strip()
         if not agent_id:
@@ -342,12 +347,14 @@ class SQLiteStore(MemoryStore):
         self._conn.commit()
 
         memory_count = self.count_memories(agent_id)
-        # Pull a wide set for the context pack (small-codebase budget)
-        all_for_pack = self.list_memories(agent_id, limit=200)
+        # Feed the WHOLE vault to the pack builder — compression is what
+        # keeps it small, not truncation, so coverage stays ~100%.
+        all_for_pack = self.list_memories(agent_id, limit=10_000)
         pack = build_context_pack(
             agent_id,
             all_for_pack,
             is_new_agent=is_new_agent or memory_count == 0,
+            token_budget=token_budget,
         )
         recent = all_for_pack[:5]
 
