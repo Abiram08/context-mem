@@ -155,6 +155,13 @@ class SQLiteStore(MemoryStore):
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        # Multi-process safe: MCP clients spawn one server process per session,
+        # so several processes may share this DB file. WAL allows concurrent
+        # readers + one writer, busy_timeout waits instead of erroring, and
+        # synchronous=NORMAL keeps durability with WAL's atomic commits.
+        self._conn.execute("PRAGMA journal_mode = WAL")
+        self._conn.execute("PRAGMA busy_timeout = 5000")
+        self._conn.execute("PRAGMA synchronous = NORMAL")
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -296,15 +303,12 @@ class SQLiteStore(MemoryStore):
 
         is_new_agent = False
         cur = self._conn.execute(
-            "SELECT agent_id FROM agents WHERE agent_id = ?",
-            (agent_id,),
+            "INSERT OR IGNORE INTO agents (agent_id, created_at) VALUES (?, ?)",
+            (agent_id, _utc_now()),
         )
-        if cur.fetchone() is None:
-            self._conn.execute(
-                "INSERT INTO agents (agent_id, created_at) VALUES (?, ?)",
-                (agent_id, _utc_now()),
-            )
-            is_new_agent = True
+        # rowcount is 0 when the agent already exists (race-safe: two processes
+        # may start() the same new agent_id concurrently — WAL + OR IGNORE).
+        is_new_agent = cur.rowcount > 0
 
         is_new_session = False
         if session_id:
@@ -390,15 +394,11 @@ class SQLiteStore(MemoryStore):
         if not 1 <= importance <= 5:
             raise ValueError("importance must be an integer from 1 to 5")
 
-        cur = self._conn.execute(
-            "SELECT agent_id FROM agents WHERE agent_id = ?",
-            (agent_id,),
+        # Race-safe agent upsert (see start_session).
+        self._conn.execute(
+            "INSERT OR IGNORE INTO agents (agent_id, created_at) VALUES (?, ?)",
+            (agent_id, _utc_now()),
         )
-        if cur.fetchone() is None:
-            self._conn.execute(
-                "INSERT INTO agents (agent_id, created_at) VALUES (?, ?)",
-                (agent_id, _utc_now()),
-            )
 
         fields = enrich_memory_fields(
             content,

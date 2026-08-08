@@ -25,8 +25,24 @@ python -m venv .venv
 # source .venv/bin/activate
 
 pip install -r requirements.txt
-python test_client.py
+python test_client.py            # engine smoke test (direct calls)
+python test_mcp_client.py        # real MCP protocol + concurrent sessions
 ```
+
+Both scripts use temporary DBs — they never touch your real `contextvault.db`.
+
+## Fully local — and proven
+
+- **Zero network at runtime**: project code imports only stdlib + fastmcp; the only
+  third-party deps (`fastmcp`/`mcp`/`httpx`) are used for the stdio transport, never
+  for network calls. No embeddings, no API keys, no telemetry.
+- **Proven over the wire**: `test_mcp_client.py` spawns the real server as a subprocess
+  (exactly how Claude Code connects), completes the MCP handshake, lists tools, and
+  round-trips start → remember → recall.
+- **Concurrency-safe**: two MCP sessions writing the same DB file at once is the normal
+  product case (each client session spawns its own server process). SQLite runs in WAL
+  mode with `busy_timeout`, and agent upserts are `INSERT OR IGNORE` — the test runs
+  two concurrent sessions against one DB and reconnects a third to verify persistence.
 
 ## MCP tools
 
@@ -134,12 +150,13 @@ importance: 5
 
 ```
 schema.sql          SQLite schema + FTS5 (search_doc)
-storage.py          MemoryStore interface + SQLite (local)
+storage.py          MemoryStore interface + SQLite (local, WAL)
 compression.py      Token estimator, segment splitting, extractive compression, dedupe
 context_engine.py   Kinds, extraction, scoring, working-context packs
 ranking.py          FTS + multi-signal recall
 server.py           FastMCP entrypoint (3 tools)
-test_client.py      End-to-end smoke test
+test_client.py      Engine smoke test (direct calls)
+test_mcp_client.py  Real MCP protocol + concurrent-session test
 ```
 
 ## Requirements

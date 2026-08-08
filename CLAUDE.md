@@ -56,7 +56,8 @@ contextvault/
   context_engine.py   # Kinds, extraction, scoring, token-budgeted working-context packs
   ranking.py          # FTS5 query + relevance/importance scoring for recall
   schema.sql           # SQLite schema (agents, sessions, memories tables)
-  test_client.py       # Standalone script that starts the server, calls all 3 tools, prints results
+  test_client.py       # Engine smoke test (direct calls)
+  test_mcp_client.py   # Real MCP protocol round trip + concurrent sessions
   README.md            # Setup + usage, written for someone evaluating this in 2 minutes
   pyproject.toml       # or requirements.txt
   CLAUDE.md            # this file
