@@ -21,7 +21,14 @@ from context_engine import (
     score_memory,
     tokenize_query,
 )
+from embeddings import cosine
 from storage import Memory, _row_to_memory
+
+# Default weight of the optional semantic signal when blending with lexical.
+SEMANTIC_WEIGHT = 0.30
+# In-memory vector cache: memory_id -> (content_hash, vector). Keeps repeated
+# recalls cheap without touching the schema.
+_vector_cache: dict[int, tuple[int, list[float]]] = {}
 
 
 @dataclass(frozen=True)
@@ -52,12 +59,18 @@ def recall(
     kind: str | None = None,
     path: str | None = None,
     tags: list[str] | None = None,
+    embedder: Any | None = None,
+    semantic_weight: float = SEMANTIC_WEIGHT,
 ) -> list[RankedMemory]:
     """Return top coding memories for *query*, scoped to *agent_id*.
 
     Optimized for small codebases: path/symbol precision and kind diversity
     matter more than pure BM25 volume. Optional hard filters: kind, path
     substring, and tags (ALL requested tags must be present, mem0-style).
+
+    When *embedder* is provided (opt-in API/local embeddings), a semantic
+    re-rank is blended with the lexical score; any embedder failure degrades
+    gracefully back to lexical-only.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -151,6 +164,26 @@ def recall(
         scored.append((mem, bd))
 
     scored.sort(key=lambda x: x[1].total, reverse=True)
+
+    # Optional semantic re-rank (opt-in; degrades gracefully to lexical).
+    if embedder is not None and scored:
+        try:
+            q_vec = embedder.embed_texts([query])[0]
+            for mem, bd in scored:
+                vec = _vector_for(embedder, mem)
+                if vec is None:
+                    continue
+                sim = cosine(q_vec, vec)
+                bd.semantic = round(sim, 4)
+                bd.total = round(
+                    (1.0 - semantic_weight) * bd.total + semantic_weight * sim, 4
+                )
+                if sim >= 0.55:
+                    bd.reasons.append(f"semantic {sim:.2f}")
+            scored.sort(key=lambda x: x[1].total, reverse=True)
+        except Exception:  # noqa: BLE001 - any embedder failure -> lexical only
+            pass
+
     diversified = diversify(scored, limit=limit, max_per_kind=max(2, limit // 2))
 
     results: list[RankedMemory] = []
@@ -203,6 +236,20 @@ def _fts_candidates(
         raw_rel = -bm25_val if bm25_val < 0 else (1.0 / (1.0 + bm25_val))
         out.append((raw_rel, _row_to_memory(row)))
     return out
+
+
+def _vector_for(embedder: Any, mem: Memory) -> list[float] | None:
+    """Embed one memory with an in-memory cache keyed by id + content hash."""
+    h = hash(mem.content)
+    entry = _vector_cache.get(mem.id)
+    if entry is not None and entry[0] == h:
+        return entry[1]
+    try:
+        vec = embedder.embed_texts([mem.content])[0]
+    except Exception:  # noqa: BLE001
+        return None
+    _vector_cache[mem.id] = (h, vec)
+    return vec
 
 
 def _tag_candidates(

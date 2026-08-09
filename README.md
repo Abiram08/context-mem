@@ -14,19 +14,34 @@ across sessions.
 
 > Optional later: implement `MemoryStore` against Postgres/Supabase for **shared team** memory. Default remains local.
 
+## Install (download & use)
+
+ContextVault is a standalone MCP server — not an AI, not a harness. Just a context
+layer that keeps a lot in mind and serves it to any MCP client.
+
+**From source (this repo):**
+
+```bash
+git clone <this-repo> context-mem && cd context-mem
+python -m venv .venv
+.venv\Scripts\activate        # Windows   (macOS/Linux: source .venv/bin/activate)
+pip install -r requirements.txt
+```
+
+**Or install it as a package** (works without the repo; the wheel ships the schema
+embedded):
+
+```bash
+pip install .
+# now `contextvault` runs the server; or connect Claude Code to it (see below)
+```
+
+**Optional extras:** `pip install .[embed]` pulls sentence-transformers for fully-local
+semantic recall (see Integrations below).
+
 ## Quick start
 
 ```bash
-git clone <this-repo> context-mem
-cd context-mem
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-# macOS/Linux
-# source .venv/bin/activate
-
-pip install -r requirements.txt
 python test_client.py            # engine smoke test (direct calls)
 python test_mcp_client.py        # real MCP protocol + concurrent sessions
 python verify_local_memory.py    # proves agent context lands in SQLite on disk
@@ -121,6 +136,25 @@ cl100k tokenizer instead.
 > deterministic and offline; the trade is that memories must be written in reasonably
 > atomic sentences (the tool docs nudge agents to do exactly that).
 
+### Integrations & API keys (optional)
+
+The default vault needs **zero keys and zero network** — recall is a local lexical
+engine (FTS5 + signals). If you want semantic recall, opt in with environment
+variables on the server process:
+
+| Mode | Env | What it does | Sends data out? |
+|------|-----|--------------|-----------------|
+| `openai` | `CONTEXTVAULT_EMBEDDINGS=openai`, `OPENAI_API_KEY=...` | OpenAI-compatible `/embeddings` re-rank blended into recall (works with OpenAI, Azure, or any compatible gateway) | ⚠️ yes — memory content goes to the provider |
+| `local` | `CONTEXTVAULT_EMBEDDINGS=local` (+ `pip install .[embed]`) | sentence-transformers re-rank on this machine | no — stays local (model downloads once) |
+
+Tuning: `EMBEDDING_MODEL` (default `text-embedding-3-small` / `all-MiniLM-L6-v2`),
+`EMBEDDING_BASE_URL` (default `https://api.openai.com/v1`), `EMBEDDING_WEIGHT`
+(how much semantic counts vs lexical; default 0.30).
+
+**Privacy note:** `openai` mode sends your notes' text to the embedding provider.
+`local` mode keeps everything on this machine. Both are opt-in — the default
+configuration never transmits a byte.
+
 Everything above runs **locally**. No embeddings, no network for memory.
 
 ## Connect Claude Code to ContextVault
@@ -195,7 +229,8 @@ schema.sql          SQLite schema + FTS5 (search_doc + memory_events audit trail
 storage.py          MemoryStore interface + SQLite (local, WAL)
 compression.py      Token estimator, segment splitting, extractive compression, dedupe
 context_engine.py   Kinds, extraction, scoring, working-context packs
-ranking.py          FTS + multi-signal recall
+ranking.py          FTS + multi-signal recall (+ optional semantic blend)
+embeddings.py       Opt-in embedders (openai API / local) for semantic re-rank
 server.py           FastMCP entrypoint (5 tools, per-connection state)
 test_client.py      Engine smoke test (direct calls)
 test_mcp_client.py  Real MCP protocol + concurrent-session test
@@ -207,6 +242,9 @@ verify_local_memory.py  Claude Code config + on-disk persistence proof
 
 - Python 3.11+
 - `fastmcp>=2.0.0`
+
+`pip install .[embed]` adds sentence-transformers for the optional local semantic
+re-rank. Everything else is stdlib + fastmcp.
 
 ## Token-economy example
 

@@ -70,11 +70,11 @@ Keep the surface small and sharp; add more tools only when the user explicitly a
   - Use plain SQLite for v1, not an ORM. Keep the schema visible and simple.
   - Design the storage layer behind a small interface (`storage.py`) so swapping SQLite
     for Postgres/Supabase later is a one-file change, not a rewrite.
-- **Embeddings for recall**: use a lightweight local embedding approach first —
-  SQLite FTS5 (full-text search) as the baseline ranking signal. If time allows, add a
-  simple embedding-based re-rank (e.g. `sentence-transformers` with a small model, or an
-  API embedding call) behind a feature flag, so the project still runs with zero external
-  API keys out of the box.
+- **Embeddings for recall**: SQLite FTS5 (full-text search) is the baseline ranking
+  signal and the default — zero keys, zero network. An OPTIONAL semantic re-rank exists
+  in `embeddings.py`, behind `CONTEXTVAULT_EMBEDDINGS=openai|local` (env), so the project
+  still runs with zero external API keys out of the box. Default must never regress to
+  requiring embeddings.
 - **No web dashboard for v1.** A CLI smoke-test script is enough. Don't build a frontend
   unless explicitly asked — it's not the point of the demo.
 
@@ -135,7 +135,7 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(content, content='memories', conten
    Follow FastMCP's decorator pattern (`@mcp.tool()`).
 5. `test_client.py` — a script that: starts a session, remembers 3-4 things, recalls
    against a query, and prints what came back. This is the thing to run to prove it works.
-6. Only after all of the above works end-to-end: consider the optional embedding re-rank.
+6. Done — `embeddings.py` ships an opt-in semantic re-rank (openai API or local).
 
 ## MCP client config (for the README, and for testing locally)
 

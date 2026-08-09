@@ -395,6 +395,7 @@ class ScoreBreakdown:
     importance: float = 0.0
     usage: float = 0.0
     recency: float = 0.0
+    semantic: float = 0.0  # optional embedding similarity (0 = not used)
     total: float = 0.0
     intent: str = "general"
     reasons: list[str] = field(default_factory=list)
@@ -410,6 +411,7 @@ class ScoreBreakdown:
             "importance": round(self.importance, 4),
             "usage": round(self.usage, 4),
             "recency": round(self.recency, 4),
+            "semantic": round(self.semantic, 4),
             "intent": self.intent,
             "reasons": self.reasons,
         }

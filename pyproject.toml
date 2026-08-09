@@ -1,18 +1,23 @@
 [project]
 name = "contextvault"
 version = "0.1.0"
-description = "Local-first MCP memory vault for coding agents (SQLite + FTS5)"
+description = "Local-first MCP memory layer for AI agents (SQLite + FTS5, optional semantic recall)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastmcp>=2.0.0",
 ]
 
+[project.optional-dependencies]
+embed = [
+    "sentence-transformers>=3.0",
+]
+
 [project.scripts]
 contextvault = "server:main"
 
 [tool.setuptools]
-py-modules = ["server", "storage", "ranking", "context_engine", "compression"]
+py-modules = ["server", "storage", "ranking", "context_engine", "compression", "embeddings"]
 
 [build-system]
 requires = ["setuptools>=68"]

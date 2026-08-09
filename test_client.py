@@ -433,6 +433,89 @@ def main() -> int:
         print("    tags filter : hard filter works; unknown tag -> 0 hits")
         print("    recency     : fresh memory scores higher than stale")
 
+        # --- optional semantic re-rank (the API-key / integrations path) ---
+        print("\n[9] optional semantic recall (integrations / API key)")
+        from embeddings import cosine
+
+        assert cosine([1.0, 0.0], [1.0, 0.0]) == 1.0
+        assert cosine([1.0, 0.0], [0.0, 1.0]) == 0.0
+        assert cosine([], [1.0]) == 0.0
+
+        # installed wheels use the embedded schema — must stay in sync
+        from storage import EMBEDDED_SCHEMA_SQL
+
+        assert EMBEDDED_SCHEMA_SQL == (
+            Path(__file__).resolve().parent / "schema.sql"
+        ).read_text(encoding="utf-8")
+
+        # recall reports embeddings=off by default (zero keys, zero network)
+        assert server.recall(query="anything", limit=1)["embeddings"] == "off"
+
+        # fresh agent with two memories: A high-importance lexical hit,
+        # B a low-overlap memory a semantic embedder would strongly match.
+        _reset_session()
+        server.start(agent_id="semantic-agent")
+        a_sem = server.remember(
+            content="Apples grow on trees and are harvested in autumn.",
+            kind="context", importance=5,
+        )
+        b_sem = server.remember(
+            content="The MARKER apple is used for jelly and dessert.",
+            kind="context", importance=4,
+        )
+        _assert_ok(a_sem, "remember#semantic-a")
+        _assert_ok(b_sem, "remember#semantic-b")
+
+        import ranking
+        from storage import open_store as _open_store
+
+        store_sem = _open_store(db_path)
+
+        # lexical baseline: A wins (higher overlap + importance)
+        lex_only = ranking.recall(
+            store_sem.connection, "semantic-agent", "fruit harvest apples", limit=2
+        )
+        assert lex_only[0].memory.id == a_sem["memory"]["id"]
+
+        # topic embedder: the query and MARKER texts embed near each other;
+        # everything else embeds far away.
+        class _TopicEmbedder:
+            def embed_texts(self, texts):
+                return [
+                    [1.0, 1.0]
+                    if "MARKER" in t or t == "fruit harvest apples"
+                    else [0.0, 1.0]
+                    for t in texts
+                ]
+
+        sem = ranking.recall(
+            store_sem.connection, "semantic-agent", "fruit harvest apples",
+            limit=2, embedder=_TopicEmbedder(), semantic_weight=0.9,
+        )
+        assert sem[0].memory.id == b_sem["memory"]["id"], [
+            (m.memory.id, m.breakdown.total, m.breakdown.semantic)
+            for m in sem
+        ]
+        assert sem[0].breakdown.semantic > 0.0
+        assert any("semantic" in r for r in sem[0].breakdown.reasons)
+
+        # graceful degradation: a failing embedder falls back to lexical
+        class _FailEmbedder:
+            def embed_texts(self, texts):
+                raise RuntimeError("embedding service down")
+
+        deg = ranking.recall(
+            store_sem.connection, "semantic-agent", "fruit harvest apples",
+            limit=2, embedder=_FailEmbedder(),
+        )
+        assert deg[0].memory.id == a_sem["memory"]["id"]  # lexical fallback
+        assert deg[0].breakdown.semantic == 0.0
+        store_sem.close()
+        print("    cosine      : unit checks pass")
+        print("    schema sync : embedded copy == schema.sql")
+        print("    re-rank     : semantic embedder flips ranking; failing embedder degrades")
+        print("    default     : recall reports embeddings=off (no keys needed)")
+
         print("\n" + "=" * 60)
         print("All checks passed (local storage + context engine)")
         print("=" * 60)

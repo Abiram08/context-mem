@@ -17,6 +17,7 @@ from fastmcp import Context, FastMCP
 
 from compression import DEFAULT_TOKEN_BUDGET, extractive_compress
 from context_engine import MEMORY_KINDS
+from embeddings import get_embedder
 from ranking import recall as rank_recall
 from storage import MemoryStore, SQLiteStore, default_db_path, open_store
 
@@ -35,6 +36,10 @@ mcp = FastMCP(
 )
 
 _store: MemoryStore | None = None
+# Optional semantic embedder (off by default) — built lazily once per process.
+_embedder: Any | None = None
+_embedder_status: str | None = None
+_embedder_checked = False
 
 # Per-connection session state, keyed by the MCP session id. A stdio client
 # gets one process per connection, but HTTP/SSE can multiplex many sessions
@@ -95,6 +100,30 @@ def _require_session(ctx: Context | None) -> tuple[MemoryStore, str, str]:
 
 def _err(message: str) -> dict[str, Any]:
     return {"ok": False, "error": message}
+
+
+def _get_embedder() -> tuple[Any | None, str | None]:
+    """Lazily build the opt-in embedder.
+
+    Returns (embedder, status) where status is None (off), 'openai'/'local'
+    (active), or an error message when the user enabled a mode that can't be
+    built (e.g. openai without a key) — recall then degrades to lexical.
+    """
+    global _embedder, _embedder_status, _embedder_checked
+    mode = os.environ.get("CONTEXTVAULT_EMBEDDINGS", "").strip().lower()
+    if not _embedder_checked:
+        _embedder_checked = True
+        if mode and mode not in ("off", "0", "none", "false", "disabled"):
+            try:
+                _embedder = get_embedder()
+                _embedder_status = "openai" if mode in ("openai", "api") else "local"
+            except Exception as exc:  # noqa: BLE001
+                _embedder_status = str(exc)
+        else:
+            _embedder_status = None
+    if isinstance(_embedder_status, str) and _embedder_status not in ("openai", "local"):
+        return None, _embedder_status
+    return _embedder, _embedder_status
 
 
 def _resolve_budget(token_budget: int | None) -> int:
@@ -390,6 +419,7 @@ def recall(
         if not isinstance(store, SQLiteStore):
             return _err("Active store does not support FTS ranking")
 
+        embedder, emb_status = _get_embedder()
         ranked = rank_recall(
             store.connection,
             agent_id,
@@ -398,6 +428,7 @@ def recall(
             kind=kind,
             path=path,
             tags=tags,
+            embedder=embedder,
         )
 
         # Usage feedback for sticky high-value memories
@@ -413,13 +444,17 @@ def recall(
                 d["dropped_segments"] = dropped
             out.append(d)
 
-        return {
+        resp: dict[str, Any] = {
             "ok": True,
             "query": query,
             "count": len(ranked),
             "storage": "local_sqlite",
+            "embeddings": emb_status if emb_status in ("openai", "local") else "off",
             "memories": out,
         }
+        if isinstance(emb_status, str) and emb_status not in ("openai", "local"):
+            resp["embeddings_error"] = emb_status
+        return resp
     except RuntimeError as e:
         return _err(str(e))
     except ValueError as e:
