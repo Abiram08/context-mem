@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """ContextVault MCP server — local coding-agent memory + small-repo context engine.
 
-Three tools: start, remember, recall.
+Five tools: start, remember, recall, update, forget.
 All memory is stored in local SQLite (contextvault.db) — no cloud required.
 Tuned for small codebases (< ~50k lines): path/symbol-aware ranking and
-dense session context packs.
+token-budgeted working-context packs.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 
 from compression import DEFAULT_TOKEN_BUDGET, extractive_compress
 from context_engine import MEMORY_KINDS
@@ -24,16 +24,23 @@ mcp = FastMCP(
     instructions=(
         "ContextVault is a LOCAL persistent memory vault for coding agents on "
         "small codebases (<~50k LOC). Data never leaves the machine (SQLite). "
-        "Workflow: call start() once per session to load a context pack; "
-        "remember() durable decisions, file maps, bugs, conventions, and gotchas "
-        "with kind + paths when possible; call recall() before non-trivial work. "
+        "Workflow: call start() once per session to load a token-budgeted "
+        "working context; remember() durable decisions, file maps, bugs, "
+        "conventions, and gotchas with kind + paths when possible; recall() "
+        "before non-trivial work; update() to correct a stale memory; forget() "
+        "to delete one. "
         f"Memory kinds: {', '.join(sorted(MEMORY_KINDS))}."
     ),
 )
 
 _store: MemoryStore | None = None
-_active_agent_id: str | None = None
-_active_session_id: str | None = None
+
+# Per-connection session state, keyed by the MCP session id. A stdio client
+# gets one process per connection, but HTTP/SSE can multiplex many sessions
+# onto one process — so state lives per session, not in module globals.
+_session_state: dict[str, dict[str, str | None]] = {}
+# Direct-call fallback (tests, embedding) — no MCP Context available.
+_legacy_active: dict[str, str | None] = {"agent_id": None, "session_id": None}
 
 
 def _get_store() -> MemoryStore:
@@ -44,13 +51,29 @@ def _get_store() -> MemoryStore:
     return _store
 
 
-def _require_session() -> tuple[MemoryStore, str, str]:
+def _active(ctx: Context | None) -> dict[str, str | None]:
+    """Return the mutable session-state dict for this call."""
+    if ctx is not None:
+        try:
+            sid = ctx.session_id
+        except RuntimeError:  # no MCP session yet (e.g. during initialize)
+            return _legacy_active
+        return _session_state.setdefault(
+            sid, {"agent_id": None, "session_id": None}
+        )
+    return _legacy_active
+
+
+def _require_session(ctx: Context | None) -> tuple[MemoryStore, str, str]:
     store = _get_store()
-    if not _active_agent_id or not _active_session_id:
+    state = _active(ctx)
+    agent_id = state.get("agent_id")
+    session_id = state.get("session_id")
+    if not agent_id or not session_id:
         raise RuntimeError(
             "No active memory session. Call start(agent_id=...) first."
         )
-    return store, _active_agent_id, _active_session_id
+    return store, str(agent_id), str(session_id)
 
 
 def _err(message: str) -> dict[str, Any]:
@@ -77,6 +100,7 @@ def start(
     agent_id: str,
     session_id: str | None = None,
     token_budget: int | None = None,
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Open or resume a local coding-agent memory session.
 
@@ -97,7 +121,6 @@ def start(
         session_id, summary, memory_count, and context_pack (verbatim +
         compressed + coverage index). All data is local SQLite only.
     """
-    global _active_agent_id, _active_session_id
     try:
         if not agent_id or not str(agent_id).strip():
             return _err("agent_id is required and must be non-empty")
@@ -109,8 +132,9 @@ def start(
             session_id,
             token_budget=budget,
         )
-        _active_agent_id = info.agent_id
-        _active_session_id = info.session_id
+        state = _active(ctx)
+        state["agent_id"] = info.agent_id
+        state["session_id"] = info.session_id
 
         return {
             "ok": True,
@@ -138,6 +162,7 @@ def remember(
     paths: list[str] | None = None,
     symbols: list[str] | None = None,
     importance: int | None = None,
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Store a durable coding memory in the **local** vault.
 
@@ -162,7 +187,7 @@ def remember(
         Stored memory record including inferred kind/paths/symbols.
     """
     try:
-        store, agent_id, session_id = _require_session()
+        store, agent_id, session_id = _require_session(ctx)
         if not content or not str(content).strip():
             return _err("content is required and must be non-empty")
 
@@ -194,12 +219,114 @@ def remember(
 
 
 @mcp.tool()
+def update(
+    memory_id: int,
+    content: str | None = None,
+    kind: str | None = None,
+    tags: list[str] | None = None,
+    paths: list[str] | None = None,
+    symbols: list[str] | None = None,
+    importance: int | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Correct a stored memory (partial update — pass only what changes).
+
+    Use this when a memory is wrong or stale instead of re-remembering and
+    creating a duplicate. Changing content re-runs path/symbol extraction;
+    fields you don't pass keep their current values. The FTS index stays in
+    sync automatically, so recall() immediately sees the new text.
+
+    Args:
+        memory_id: The id of the memory to update (from a prior remember/
+            recall/start response).
+        content: New text. Empty string is rejected.
+        kind: New kind (decision, file_map, bug, …). Defaults to keeping the
+            current kind.
+        tags: Replace tags. Omit to keep.
+        paths: Replace related paths (auto-extraction from new content is
+            still merged in). Omit to keep.
+        symbols: Replace related symbols. Omit to keep.
+        importance: New importance 1 (low) – 5 (critical). Omit to keep.
+
+    Returns:
+        The updated memory record.
+    """
+    try:
+        store, agent_id, _session_id = _require_session(ctx)
+        if int(memory_id) < 1:
+            return _err("memory_id must be a positive integer")
+        if all(
+            v is None
+            for v in (content, kind, tags, paths, symbols, importance)
+        ):
+            return _err("provide at least one field to update")
+
+        mem = store.update_memory(
+            int(memory_id),
+            agent_id,
+            content=content,
+            kind=kind,
+            tags=list(tags) if tags is not None else None,
+            paths=list(paths) if paths is not None else None,
+            symbols=list(symbols) if symbols is not None else None,
+            importance=None if importance is None else int(importance),
+        )
+        return {
+            "ok": True,
+            "memory": mem.to_dict(),
+            "storage": "local_sqlite",
+        }
+    except (RuntimeError, ValueError) as e:
+        return _err(str(e))
+    except Exception as e:  # noqa: BLE001
+        return _err(f"Failed to update memory: {e}")
+
+
+@mcp.tool()
+def forget(
+    memory_id: int,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Delete a stored memory permanently (local vault only).
+
+    Use when a memory is wrong, superseded, or no longer relevant. The FTS
+    index is cleaned up automatically. Deletion is permanent — there is no
+    undo — and only works on memories owned by the active agent.
+
+    Args:
+        memory_id: The id of the memory to delete.
+
+    Returns:
+        deleted: true on success; a structured error if the memory does not
+        belong to the active agent.
+    """
+    try:
+        store, agent_id, _session_id = _require_session(ctx)
+        if int(memory_id) < 1:
+            return _err("memory_id must be a positive integer")
+        deleted = store.delete_memory(int(memory_id), agent_id)
+        if not deleted:
+            return _err(f"memory {memory_id} not found for agent {agent_id!r}")
+        return {
+            "ok": True,
+            "deleted": True,
+            "memory_id": int(memory_id),
+            "storage": "local_sqlite",
+        }
+    except (RuntimeError, ValueError) as e:
+        return _err(str(e))
+    except Exception as e:  # noqa: BLE001
+        return _err(f"Failed to forget memory: {e}")
+
+
+@mcp.tool()
 def recall(
     query: str,
     limit: int = 5,
     kind: str | None = None,
     path: str | None = None,
     compact: bool = False,
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Retrieve the most relevant **local** coding memories for a task.
 
@@ -222,7 +349,7 @@ def recall(
         Ranked memories with scores, match reasons (`why`), and signal breakdown.
     """
     try:
-        store, agent_id, _session_id = _require_session()
+        store, agent_id, _session_id = _require_session(ctx)
         if not query or not str(query).strip():
             return _err("query is required and must be non-empty")
 

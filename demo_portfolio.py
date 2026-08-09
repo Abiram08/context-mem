@@ -16,6 +16,14 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+def _reset_session() -> None:
+    """Forget the active session between demo phases (direct-call mode)."""
+    import server  # noqa: PLC0415
+
+    server._session_state.clear()
+    server._legacy_active.update({"agent_id": None, "session_id": None})
+
+
 # Force UTF-8 on Windows terminals
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -48,7 +56,7 @@ def banner() -> None:
     print()
     print(c("cyan", "  ╔══════════════════════════════════════════════════════════╗"))
     print(c("cyan", "  ║") + c("bold", "  ContextVault") + c("dim", "  ·  local MCP memory for coding agents  ") + c("cyan", "║"))
-    print(c("cyan", "  ║") + c("gray", "  SQLite  ·  FTS5 context engine  ·  no cloud  ·  3 tools  ") + c("cyan", "║"))
+    print(c("cyan", "  ║") + c("gray", "  SQLite  ·  FTS5 context engine  ·  no cloud  ·  5 tools  ") + c("cyan", "║"))
     print(c("cyan", "  ╚══════════════════════════════════════════════════════════╝"))
     print()
 
@@ -76,8 +84,7 @@ def main() -> int:
         import server
 
         server._store = None
-        server._active_agent_id = None
-        server._active_session_id = None
+        _reset_session()
 
         banner()
 
@@ -177,8 +184,7 @@ def main() -> int:
 
         # --- RESUME / CONTEXT PACK ---
         step(4, "start() again  —  token-budgeted working context")
-        server._active_agent_id = None
-        server._active_session_id = None
+        _reset_session()
         resumed = server.start(agent_id="portfolio-demo")
         assert resumed.get("ok"), resumed
         pack = resumed["context_pack"]

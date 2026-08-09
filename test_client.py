@@ -17,6 +17,14 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+def _reset_session() -> None:
+    """Forget the active session between test phases (direct-call mode)."""
+    import server  # noqa: PLC0415 - lazy import keeps the DB env set first
+
+    server._session_state.clear()
+    server._legacy_active.update({"agent_id": None, "session_id": None})
+
+
 
 def main() -> int:
     # Windows consoles often default to cp1252; force UTF-8 for smoke output.
@@ -39,8 +47,7 @@ def main() -> int:
         from context_engine import extract_paths, infer_kind
 
         server._store = None
-        server._active_agent_id = None
-        server._active_session_id = None
+        _reset_session()
 
         print("=" * 60)
         print("ContextVault context-engine smoke test")
@@ -198,8 +205,7 @@ def main() -> int:
 
         # --- resume + context pack ---
         print("\n[4] resume agent - context pack anchors")
-        server._active_agent_id = None
-        server._active_session_id = None
+        _reset_session()
         resumed = server.start(agent_id="coding-agent-demo")
         _assert_ok(resumed, "resume")
         assert resumed["is_new_agent"] is False
@@ -225,14 +231,72 @@ def main() -> int:
         print(f"    coverage    : {pack['coverage']:.0%}  verbatim={len(pack['verbatim'])} compressed={len(pack['compressed'])} index_paths={len(pack['index']['paths'])}")
         print(f"    summary     : {pack['summary'][:150]}...")
 
+        # --- update & forget ---
+        print("\n[5] update() and forget()")
+
+        upd = server.remember(
+            content="Old note: caching lives in src/cache.ts (in-memory, no TTL).",
+            kind="file_map",
+            paths=["src/cache.ts"],
+            importance=2,
+        )
+        _assert_ok(upd, "remember-for-update")
+        mid = upd["memory"]["id"]
+
+        # full update: content + paths + importance (kind preserved)
+        changed = server.update(
+            memory_id=mid,
+            content="New: caching moved to src/redis_cache.ts with a 60s TTL.",
+            paths=["src/redis_cache.ts"],
+            importance=4,
+        )
+        _assert_ok(changed, "update")
+        assert changed["memory"]["content"].startswith("New: caching")
+        assert "src/redis_cache.ts" in changed["memory"]["paths"]
+        assert changed["memory"]["importance"] == 4
+        assert changed["memory"]["kind"] == "file_map"
+
+        # recall must see the NEW text (FTS reindexed by trigger)
+        hit = server.recall(query="redis cache ttl", limit=1)
+        assert hit["memories"][0]["id"] == mid
+        assert "redis_cache.ts" in hit["memories"][0]["content"]
+
+        # partial update: only importance
+        bumped = server.update(memory_id=mid, importance=5)
+        _assert_ok(bumped, "update-importance")
+        assert bumped["memory"]["importance"] == 5
+        assert bumped["memory"]["content"].startswith("New: caching")
+
+        # validation
+        assert server.update(memory_id=mid, importance=9)["ok"] is False
+        assert server.update(memory_id=mid)["ok"] is False  # no fields
+        assert server.update(memory_id=999_999, content="x")["ok"] is False
+        assert server.update(memory_id=0, content="x")["ok"] is False
+
+        # cross-agent protection
+        _reset_session()
+        server.start(agent_id="other-agent")
+        assert server.update(memory_id=mid, content="hijack")["ok"] is False
+        assert server.forget(memory_id=mid)["ok"] is False
+
+        # back to the owning agent: forget works, then is gone
+        _reset_session()
+        server.start(agent_id="coding-agent-demo")
+        gone = server.forget(memory_id=mid)
+        _assert_ok(gone, "forget")
+        assert gone["deleted"] is True
+        gone_again = server.forget(memory_id=mid)
+        assert gone_again["ok"] is False
+        print("    update      : content/paths/importance + partial + validation ok")
+        print("    forget      : deleted, second forget errors, cross-agent blocked")
+
         # --- errors ---
-        print("\n[5] error handling")
+        print("\n[6] error handling")
         bad = server.remember(content="")
         assert bad["ok"] is False
         print(f"    empty content -> {bad['error']}")
 
-        server._active_agent_id = None
-        server._active_session_id = None
+        _reset_session()
         no_sess = server.recall(query="anything")
         assert no_sess["ok"] is False
         print(f"    no session    -> {no_sess['error']}")
@@ -244,11 +308,10 @@ def main() -> int:
         if server._store is not None:
             server._store.close()
             server._store = None
-        server._active_agent_id = None
-        server._active_session_id = None
+        _reset_session()
 
         # --- compression units (offline, deterministic) ---
-        print("\n[6] compression units")
+        print("\n[7] compression units")
         from compression import (
             collapse_redundant,
             estimate_tokens,

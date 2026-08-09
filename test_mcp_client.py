@@ -83,6 +83,8 @@ async def main() -> int:
         # -- Two concurrent sessions against the same DB file ----------------
         # Each Client spawns its own server subprocess over stdio, so
         # this is two processes writing the same SQLite file at once (WAL).
+        # Each session runs a DIFFERENT agent — proving session state is
+        # isolated per connection, not a shared module global.
         async with (
             Client(_config()) as client_a,
             Client(_config()) as client_b,
@@ -90,17 +92,20 @@ async def main() -> int:
             tools = await client_a.list_tools()
             names = sorted(t.name for t in tools)
             print(f"tools/list   : {names}")
-            assert names == ["recall", "remember", "start"], names
+            assert names == ["forget", "recall", "remember", "start", "update"], names
+            for t in tools:
+                props = (t.inputSchema or {}).get("properties", {})
+                assert "ctx" not in props, f"ctx leaked into {t.name} schema"
 
             ra, rb = await asyncio.gather(
-                client_a.call_tool("start", {"agent_id": "mcp-demo"}),
-                client_b.call_tool("start", {"agent_id": "mcp-demo"}),
+                client_a.call_tool("start", {"agent_id": "mcp-agent-a"}),
+                client_b.call_tool("start", {"agent_id": "mcp-agent-b"}),
             )
             sa, sb = _json(ra), _json(rb)
             assert sa["ok"] and sb["ok"] and sa["storage"] == "local_sqlite"
             pack_a = sa["context_pack"]
             print(
-                f"start x2     : concurrent sessions ok "
+                f"start x2     : concurrent sessions ok (agents isolated) "
                 f"(pack {pack_a['tokens_used']}/{pack_a['token_budget']} tokens)"
             )
 
@@ -133,19 +138,20 @@ async def main() -> int:
             )
             print("remember x2  : concurrent writes ok")
 
-            # Concurrent reads from both processes.
-            ha, hb = await asyncio.gather(
-                client_a.call_tool("recall", {"query": "where is the rate limiter", "limit": 5}),
-                client_b.call_tool("recall", {"query": "where is the rate limiter", "limit": 5}),
+            # Session isolation: A must see its memory, never B's (and vice
+            # versa) — even though both processes share one SQLite file.
+            ja, jb = await asyncio.gather(
+                client_a.call_tool("recall", {"query": "rate limiter", "limit": 5}),
+                client_b.call_tool("recall", {"query": "rate limiter", "limit": 5}),
             )
-            ja, jb = _json(ha), _json(hb)
+            ja, jb = _json(ja), _json(jb)
             assert ja["ok"] and jb["ok"]
-            assert ja["count"] >= 1 and jb["count"] >= 1
-            top = ja["memories"][0]
+            a_ids = {m["id"] for m in ja["memories"]}
+            b_ids = {m["id"] for m in jb["memories"]}
+            assert a_ids and b_ids  # both got hits
+            assert a_ids & b_ids == set(), (a_ids, b_ids)  # fully disjoint
             print(
-                f"recall x2    : both sessions see hits "
-                f"(A={ja['count']}, B={jb['count']}) top={top['kind']} "
-                f"score={top['score']:.3f}"
+                f"isolation    : A sees {a_ids}, B sees {b_ids} — no cross-agent leaks"
             )
 
             # Error paths travel over the wire as structured results.
@@ -153,20 +159,65 @@ async def main() -> int:
             assert bad["ok"] is False and "query is required" in bad["error"]
             print(f"error path   : {bad['error']}")
 
+            # update + forget over the wire, scoped to the owning agent.
+            id_a = next(iter(a_ids))
+            upd = _json(
+                await client_a.call_tool(
+                    "update",
+                    {
+                        "memory_id": id_a,
+                        "content": (
+                            "Rate limiter moved to src/limits_v2.ts, "
+                            "200 req/min per user."
+                        ),
+                        "importance": 5,
+                    },
+                )
+            )
+            assert upd["ok"] and upd["memory"]["importance"] == 5
+            assert "src/limits_v2.ts" in upd["memory"]["paths"]
+            rehit = _json(
+                await client_a.call_tool(
+                    "recall", {"query": "limits_v2 200 req", "limit": 3}
+                )
+            )
+            assert rehit["memories"][0]["id"] == id_a
+            assert "limits_v2" in rehit["memories"][0]["content"]
+
+            # B cannot update/forget A's memory (cross-agent blocked).
+            stolen = _json(
+                await client_b.call_tool("forget", {"memory_id": id_a})
+            )
+            assert stolen["ok"] is False
+
+            gone = _json(
+                await client_a.call_tool("forget", {"memory_id": id_a})
+            )
+            assert gone["ok"] and gone["deleted"] is True
+            empty = _json(
+                await client_a.call_tool("recall", {"query": "rate limiter", "limit": 5})
+            )
+            assert empty["count"] == 0
+            print("update/forget: wire-level edit + delete ok, cross-agent blocked")
+
         # -- A third process reconnects later: everything persisted ----------
         async with Client(_config()) as client_c:
-            started = _json(
-                await client_c.call_tool("start", {"agent_id": "mcp-demo"})
+            started_b = _json(
+                await client_c.call_tool("start", {"agent_id": "mcp-agent-b"})
             )
-            pack = started["context_pack"]
-            assert started["ok"]
-            assert started["memory_count"] == 2  # exactly our two remembers
+            pack = started_b["context_pack"]
+            assert started_b["ok"]
+            assert started_b["memory_count"] == 1  # B's memory survived
             assert pack["coverage"] == 1.0
             stored_paths = {p for a in pack["anchors"] for p in a.get("paths", [])}
-            assert {"src/limits.ts", "src/session.ts"} <= stored_paths
+            assert stored_paths == {"src/session.ts"}
+            started_a = _json(
+                await client_c.call_tool("start", {"agent_id": "mcp-agent-a"})
+            )
+            assert started_a["memory_count"] == 0  # A forgot its memory
             print(
-                f"reconnect    : {started['memory_count']} memories persisted, "
-                f"coverage {pack['coverage']:.0%}, paths {sorted(stored_paths)}"
+                f"reconnect    : agent B={started_b['memory_count']} memory, "
+                f"agent A={started_a['memory_count']} (forgot) — persisted per-agent"
             )
 
         print("\nMCP protocol round-trip OK (stdio, concurrent sessions, WAL)")

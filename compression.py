@@ -17,6 +17,7 @@ testable without any external service.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import replace
 from typing import Any
@@ -41,18 +42,43 @@ MERGE_KINDS = frozenset({"file_map", "api", "context"})  # kinds that merge free
 
 _WORD_RE = re.compile(r"\S+")
 
+_tiktoken_checked = False
+_tiktoken_enc: Any | None = None
+
+
+def _use_tiktoken() -> bool:
+    """Opt-in real tokenizer: CONTEXTVAULT_TOKENIZER=tiktoken (+pip install
+    tiktoken). Default stays fully offline, deterministic, dependency-free.
+    """
+    global _tiktoken_checked, _tiktoken_enc
+    if not _tiktoken_checked:
+        _tiktoken_checked = True
+        if os.environ.get("CONTEXTVAULT_TOKENIZER", "").lower() == "tiktoken":
+            try:
+                import tiktoken  # type: ignore[import-not-found]
+
+                _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+            except Exception:  # noqa: BLE001 - missing package / vocab
+                _tiktoken_enc = None
+    return _tiktoken_enc is not None
+
 
 def estimate_tokens(text: str) -> int:
-    """Estimate tokens for mixed prose+code text, fully offline.
+    """Estimate tokens for mixed prose+code text, fully offline by default.
 
-    Rough cl100k-style density: ~1.35 tokens per prose word, ~1.0 per code-ish
-    token (paths/identifiers with separators pack denser), with long tokens
-    (identifiers, URLs) charging extra. Exactness isn't the goal — a stable,
-    monotonic budget currency is. Swap for tiktoken later without changing
-    callers.
+    With CONTEXTVAULT_TOKENIZER=tiktoken (and tiktoken installed), counts
+    with the real cl100k_base tokenizer; otherwise a deterministic heuristic:
+    ~1.35 tokens per prose word, ~1.0 per code-ish token (paths/identifiers
+    with separators pack denser), with long tokens charging extra. Exactness
+    isn't the goal — a stable, monotonic budget currency is.
     """
     if not text:
         return 0
+    if _use_tiktoken():
+        try:
+            return max(1, len(_tiktoken_enc.encode(text)))
+        except Exception:  # noqa: BLE001 - fall back to heuristic
+            pass
     n_prose = 0
     n_codey = 0
     for w in _WORD_RE.findall(text):

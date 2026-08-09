@@ -138,6 +138,25 @@ class MemoryStore(ABC):
         """Total memories stored for an agent."""
 
     @abstractmethod
+    def update_memory(
+        self,
+        memory_id: int,
+        agent_id: str,
+        *,
+        content: str | None = None,
+        kind: str | None = None,
+        tags: list[str] | None = None,
+        paths: list[str] | None = None,
+        symbols: list[str] | None = None,
+        importance: int | None = None,
+    ) -> Memory:
+        """Partial-update a memory owned by *agent_id*; FTS stays in sync."""
+
+    @abstractmethod
+    def delete_memory(self, memory_id: int, agent_id: str) -> bool:
+        """Delete a memory owned by *agent_id*; False if not found."""
+
+    @abstractmethod
     def mark_accessed(self, memory_ids: list[int]) -> None:
         """Bump access stats after a successful recall."""
 
@@ -492,6 +511,90 @@ class SQLiteStore(MemoryStore):
             (agent_id,),
         )
         return int(cur.fetchone()["n"])
+
+    def update_memory(
+        self,
+        memory_id: int,
+        agent_id: str,
+        *,
+        content: str | None = None,
+        kind: str | None = None,
+        tags: list[str] | None = None,
+        paths: list[str] | None = None,
+        symbols: list[str] | None = None,
+        importance: int | None = None,
+    ) -> Memory:
+        """Partial update: pass only the fields that change.
+
+        Content changes re-run kind/path/symbol extraction (merged with any
+        explicitly passed fields); unmentioned fields keep their values.
+        The memories_au trigger keeps the FTS index in sync automatically.
+        """
+        row = self._conn.execute(
+            "SELECT * FROM memories WHERE id = ? AND agent_id = ?",
+            (memory_id, agent_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"memory {memory_id} not found for agent {agent_id!r}")
+
+        existing = _row_to_memory(row)
+        if content is not None and not str(content).strip():
+            raise ValueError("content must be a non-empty string")
+        if importance is not None and not 1 <= int(importance) <= 5:
+            raise ValueError("importance must be an integer from 1 to 5")
+
+        new_content = str(content).strip() if content is not None else existing.content
+        final_kind = normalize_kind(kind) if kind else existing.kind
+        fields = enrich_memory_fields(
+            new_content,
+            kind=final_kind,
+            tags=[str(t).strip() for t in tags] if tags is not None else existing.tags,
+            paths=(
+                [str(p).replace("\\", "/").strip() for p in paths]
+                if paths is not None
+                else existing.paths
+            ),
+            symbols=(
+                [str(s).strip() for s in symbols]
+                if symbols is not None
+                else existing.symbols
+            ),
+        )
+        final_importance = int(importance) if importance is not None else existing.importance
+
+        self._conn.execute(
+            """
+            UPDATE memories
+            SET content = ?, kind = ?, tags = ?, paths = ?, symbols = ?,
+                importance = ?, search_doc = ?
+            WHERE id = ? AND agent_id = ?
+            """,
+            (
+                new_content,
+                fields["kind"],
+                json.dumps(fields["tags"]),
+                json.dumps(fields["paths"]),
+                json.dumps(fields["symbols"]),
+                final_importance,
+                fields["search_doc"],
+                memory_id,
+                agent_id,
+            ),
+        )
+        self._conn.commit()
+        updated = self._conn.execute(
+            "SELECT * FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        return _row_to_memory(updated)
+
+    def delete_memory(self, memory_id: int, agent_id: str) -> bool:
+        """Delete one memory (FTS cleaned up by the memories_ad trigger)."""
+        cur = self._conn.execute(
+            "DELETE FROM memories WHERE id = ? AND agent_id = ?",
+            (memory_id, agent_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
 
     def mark_accessed(self, memory_ids: list[int]) -> None:
         if not memory_ids:

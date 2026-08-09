@@ -6,29 +6,37 @@ Instructions for Claude Code (or any agentic coding tool) building this project 
 
 ContextVault is an MCP (Model Context Protocol) server that gives AI agents persistent
 memory across sessions. Any MCP-compatible client (Claude Code, Claude Desktop, OpenCode,
-Cursor, etc.) can connect to it and call three tools to start a memory session, save
-memories, and recall relevant ones later.
+Cursor, etc.) can connect to it and call five tools — `start`, `remember`, `recall`,
+`update`, `forget` — to run a memory session, save and correct memories, and recall
+relevant ones later.
 
 This is a portfolio/demo project. It needs to actually run, be genuinely useful, and be
 demoable in under 2 minutes (clone → install → connect → use).
 
-## Core tools (the whole API surface)
+## Core tools (the API surface)
 
-1. **`start(agent_id: str, session_id: str | None)`**
+1. **`start(agent_id: str, session_id: str | None, token_budget: int | None)`**
    Initializes or resumes a memory context for an agent. Returns a session handle and a
-   short summary of what's already known about this agent/context (if anything).
+   token-budgeted **working context** (verbatim + compressed + coverage index) covering
+   everything already known about this agent/context.
 
-2. **`remember(content: str, tags: list[str] | None, importance: int | None)`**
-   Stores a memory. `content` is free text. `tags` are optional labels for filtering.
-   `importance` (1-5, default 3) affects ranking in recall.
+2. **`remember(content: str, kind: str | None, tags: list[str] | None, paths: list[str] | None, symbols: list[str] | None, importance: int | None)`**
+   Stores a memory. `content` is free text; paths/symbols are auto-extracted. `kind` is
+   a coding-memory type (decision, file_map, bug, …); `importance` (1-5, default 3)
+   affects ranking in recall.
 
-3. **`recall(query: str, limit: int = 5)`**
+3. **`recall(query: str, limit: int = 5, kind: str | None, path: str | None, compact: bool)`**
    Retrieves the most relevant stored memories for a query, ranked by relevance and
    importance. This is the tool agents call constantly — it needs to be fast and actually
-   return useful results, not just keyword-match noise.
+   return useful results, not just keyword-match noise. `compact=true` returns distilled
+   snippets to save tokens.
 
-Keep the API surface to exactly these three tools for v1. Do not add more tools unless
-explicitly asked — the value here is that it's small, sharp, and reliable.
+4. **`update(memory_id: int, …)`** — partial-update a memory (correct stale notes instead
+   of duplicating). Content changes re-run extraction; FTS stays in sync via trigger.
+
+5. **`forget(memory_id: int)`** — delete a memory permanently, scoped to the active agent.
+
+Keep the surface small and sharp; add more tools only when the user explicitly asks.
 
 ## Tech stack
 
@@ -50,7 +58,7 @@ explicitly asked — the value here is that it's small, sharp, and reliable.
 
 ```
 contextvault/
-  server.py          # FastMCP server entrypoint, tool definitions
+  server.py          # FastMCP entrypoint, tool definitions (5 tools)
   storage.py          # Storage interface + SQLite implementation
   compression.py      # Token estimator, segment splitting, extractive compression, dedupe
   context_engine.py   # Kinds, extraction, scoring, token-budgeted working-context packs
@@ -143,7 +151,8 @@ verbatim.
   runs clean and shows a remember → recall round trip working.
 - README has a config block that lets someone plug this into Claude Code in under a
   minute.
-- All three tools work when called from an actual MCP client, not just the test script.
+- All five tools work when called from an actual MCP client, not just the test script
+  (`test_mcp_client.py` proves it over stdio, including concurrent sessions).
 
 ## Explicitly out of scope for v1
 

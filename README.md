@@ -2,7 +2,9 @@
 
 **Local MCP memory for coding agents** — with a **small-codebase context engine**.
 
-Any MCP client (Claude Code, Claude Desktop, Cursor, OpenCode, …) can call three tools — `start`, `remember`, `recall` — and keep durable project knowledge across sessions.
+Any MCP client (Claude Code, Claude Desktop, Cursor, OpenCode, …) can call five tools —
+`start`, `remember`, `recall`, `update`, `forget` — and keep durable project knowledge
+across sessions.
 
 | Goal | How ContextVault does it |
 |------|---------------------------|
@@ -50,7 +52,9 @@ Both scripts use temporary DBs — they never touch your real `contextvault.db`.
 |------|----------------|
 | `start(agent_id, session_id?, token_budget?)` | Open/resume session; returns a **token-budgeted working context** (verbatim + compressed + coverage index) |
 | `remember(content, kind?, tags?, paths?, symbols?, importance?)` | Store a durable coding memory **locally** |
-| `recall(query, limit?, kind?, path?)` | Multi-signal retrieval with match reasons |
+| `recall(query, limit?, kind?, path?, compact?)` | Multi-signal retrieval with match reasons; `compact=true` returns ~220-token snippets |
+| `update(memory_id, content?, kind?, tags?, paths?, symbols?, importance?)` | **Correct** a stale memory (partial update, pass only what changes) — FTS stays in sync |
+| `forget(memory_id)` | **Delete** a memory permanently (scoped to the active agent, no undo) |
 
 ### Memory kinds (coding ontology)
 
@@ -90,7 +94,9 @@ For repos under ~50k lines, dense structured memory beats huge chat dumps:
 
 Budget knobs: `start(..., token_budget=N)` (256–16000) or env `CONTEXTVAULT_TOKEN_BUDGET`
 (default 1200). `recall(..., compact=True)` returns ~220-token distilled snippets when
-you want cheap results.
+you want cheap results. Token counting defaults to the offline heuristic; set
+`CONTEXTVAULT_TOKENIZER=tiktoken` (+ `pip install tiktoken`) to count with the real
+cl100k tokenizer instead.
 
 Everything above runs **locally**. No embeddings, no network for memory.
 
@@ -135,7 +141,9 @@ Optional smaller/larger working-context budget (still local):
    exact, `compressed` anchors are distilled (call `recall()` for full detail), and
    `index.paths`/`index.symbols` cover every stored path/symbol.  
 2. `recall` before non-trivial edits — use `compact=True` when you only need cheap hits  
-3. `remember` decisions, file maps, bugs, conventions (with `paths` when you can)
+3. `remember` decisions, file maps, bugs, conventions (with `paths` when you can)  
+4. `update(memory_id, …)` to correct a wrong/stale memory instead of re-remembering  
+5. `forget(memory_id)` when a memory is superseded or no longer relevant
 
 Example `remember`:
 
@@ -154,7 +162,7 @@ storage.py          MemoryStore interface + SQLite (local, WAL)
 compression.py      Token estimator, segment splitting, extractive compression, dedupe
 context_engine.py   Kinds, extraction, scoring, working-context packs
 ranking.py          FTS + multi-signal recall
-server.py           FastMCP entrypoint (3 tools)
+server.py           FastMCP entrypoint (5 tools, per-connection state)
 test_client.py      Engine smoke test (direct calls)
 test_mcp_client.py  Real MCP protocol + concurrent-session test
 ```
