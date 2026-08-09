@@ -10,6 +10,7 @@ token-budgeted working-context packs.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 from fastmcp import Context, FastMCP
@@ -46,9 +47,25 @@ _legacy_active: dict[str, str | None] = {"agent_id": None, "session_id": None}
 def _get_store() -> MemoryStore:
     global _store
     if _store is None:
-        db = os.environ.get("CONTEXTVAULT_DB") or str(default_db_path())
-        _store = open_store(db)
+        _store = open_store(_resolve_db_path())
     return _store
+
+
+def _resolve_db_path() -> str:
+    """Vault location, in priority order:
+
+    1. CONTEXTVAULT_DB env (explicit, always wins)
+    2. CLAUDE_PROJECT_DIR — Claude Code sets this for spawned MCP servers, so
+       each project gets its own local vault next to the code it works on
+    3. Repo root (server.py location)
+    """
+    explicit = os.environ.get("CONTEXTVAULT_DB")
+    if explicit:
+        return explicit
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+    if project_dir:
+        return str(Path(project_dir) / "contextvault.db")
+    return str(default_db_path())
 
 
 def _active(ctx: Context | None) -> dict[str, str | None]:

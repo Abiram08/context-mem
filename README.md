@@ -29,6 +29,7 @@ python -m venv .venv
 pip install -r requirements.txt
 python test_client.py            # engine smoke test (direct calls)
 python test_mcp_client.py        # real MCP protocol + concurrent sessions
+python verify_local_memory.py    # proves agent context lands in SQLite on disk
 ```
 
 Both scripts use temporary DBs — they never touch your real `contextvault.db`.
@@ -122,40 +123,48 @@ cl100k tokenizer instead.
 
 Everything above runs **locally**. No embeddings, no network for memory.
 
-## Connect to Claude Code / Desktop
+## Connect Claude Code to ContextVault
 
-Use absolute paths:
+This repo ships a committed **`.mcp.json`** — Claude Code auto-loads it whenever it
+runs inside this project. `claude mcp list` should show:
 
-```json
-{
-  "mcpServers": {
-    "contextvault": {
-      "command": "Z:/Projects/Working/context-mem/.venv/Scripts/python.exe",
-      "args": ["Z:/Projects/Working/context-mem/server.py"]
-    }
-  }
-}
+```text
+contextvault: <venv-python> <repo>/server.py - ✓ Connected
 ```
 
-Optional custom DB path (still local):
+**One-liner for any other project** (keeps this project's paths):
 
-```json
-{
-  "env": {
-    "CONTEXTVAULT_DB": "C:/Users/you/.contextvault/my-project.db"
-  }
-}
+```bash
+claude mcp add --transport stdio --scope project contextvault -- \
+  Z:/Projects/Working/context-mem/.venv/Scripts/python.exe \
+  Z:/Projects/Working/context-mem/server.py
 ```
 
-Optional smaller/larger working-context budget (still local):
+### Where the agent's memory lives
 
-```json
-{
-  "env": {
-    "CONTEXTVAULT_TOKEN_BUDGET": "800"
-  }
-}
+By default the vault is a single local SQLite file. The server resolves it in this
+order (all local, never a cloud):
+
+1. `CONTEXTVAULT_DB` env — explicit override, always wins.
+2. `CLAUDE_PROJECT_DIR` — Claude Code sets this on every spawned MCP server, so
+   **each project automatically gets its own vault** next to the code it works on
+   (`<project>/contextvault.db`).
+3. Repo root (`contextvault.db` next to `server.py`).
+
+So two different projects can connect to the same server install and each get an
+isolated, project-scoped memory — no shared context leaking between projects.
+
+The `.mcp.json` in this repo pins an explicit `CONTEXTVAULT_DB` for determinism.
+
+### Verify the local storage promise
+
+```bash
+python verify_local_memory.py
 ```
+
+It reads `.mcp.json`, round-trips start → remember → recall over real stdio MCP,
+prints the on-disk SQLite rows + audit trail, then reconnects in a fresh process to
+show the context pack rebuilding from disk.
 
 ### Agent workflow
 
@@ -182,7 +191,7 @@ importance: 5
 ## Project layout
 
 ```
-schema.sql          SQLite schema + FTS5 (search_doc)
+schema.sql          SQLite schema + FTS5 (search_doc + memory_events audit trail)
 storage.py          MemoryStore interface + SQLite (local, WAL)
 compression.py      Token estimator, segment splitting, extractive compression, dedupe
 context_engine.py   Kinds, extraction, scoring, working-context packs
@@ -190,6 +199,8 @@ ranking.py          FTS + multi-signal recall
 server.py           FastMCP entrypoint (5 tools, per-connection state)
 test_client.py      Engine smoke test (direct calls)
 test_mcp_client.py  Real MCP protocol + concurrent-session test
+verify_local_memory.py  Claude Code config + on-disk persistence proof
+.mcp.json           Claude Code project-scoped MCP config (auto-loaded)
 ```
 
 ## Requirements

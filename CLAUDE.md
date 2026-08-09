@@ -13,6 +13,27 @@ relevant ones later.
 This is a portfolio/demo project. It needs to actually run, be genuinely useful, and be
 demoable in under 2 minutes (clone → install → connect → use).
 
+## Using your memory vault (Claude Code sessions in this repo)
+
+This repo's `.mcp.json` registers ContextVault as an MCP server, so Claude Code
+sessions here get five tools: `start`, `remember`, `recall`, `update`, `forget`.
+
+Recommended rhythm:
+
+1. **`start(agent_id=...)`** at the beginning of a session → read `context_pack`:
+   `verbatim` anchors are exact, `compressed` anchors are distilled (call `recall()`
+   for full detail), `index.paths`/`index.symbols` cover every stored path/symbol,
+   and `recent_events` shows what changed since the last session.
+2. **`recall(query, compact=True)`** before non-trivial edits — cheap hits, then
+   `recall()` without compact when you need full content.
+3. **`remember(...)`** decisions, file maps, bugs, conventions, gotchas as they're
+   discovered — near-duplicates auto-merge, so restating a fact updates it.
+4. **`update(memory_id, ...)`** to correct a stale note; **`forget(memory_id)`** when
+   one is superseded.
+
+The vault is a single local SQLite file (default `contextvault.db` next to
+`server.py`, or per-project via `CLAUDE_PROJECT_DIR`). Never leak it to a cloud.
+
 ## Core tools (the API surface)
 
 1. **`start(agent_id: str, session_id: str | None, token_budget: int | None)`**
