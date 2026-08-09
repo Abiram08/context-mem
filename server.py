@@ -147,6 +147,7 @@ def start(
             "context_pack": info.context_pack,
             "storage": "local_sqlite",
             "recent_memories": [m.to_dict() for m in info.recent_memories],
+            "recent_events": info.recent_events,
         }
     except ValueError as e:
         return _err(str(e))
@@ -162,6 +163,7 @@ def remember(
     paths: list[str] | None = None,
     symbols: list[str] | None = None,
     importance: int | None = None,
+    dedup: bool = True,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Store a durable coding memory in the **local** vault.
@@ -182,9 +184,14 @@ def remember(
         paths: Related file paths (e.g. ["src/middleware/auth.ts"]).
         symbols: Related functions/classes (e.g. ["AuthMiddleware", "verifyJwt"]).
         importance: 1 (low) – 5 (critical). Default 3.
+        dedup: When true (default), a near-duplicate of an existing memory is
+            merged into it (content/paths/symbols/tags unioned, max importance)
+            instead of inserting a duplicate — mem0-style add. Pass false only
+            when you deliberately want a separate, similar-looking note.
 
     Returns:
-        Stored memory record including inferred kind/paths/symbols.
+        Stored memory record; deduplicated/merged_with are set when a merge
+        happened instead of an insert.
     """
     try:
         store, agent_id, session_id = _require_session(ctx)
@@ -204,6 +211,7 @@ def remember(
             paths=list(paths) if paths else None,
             symbols=list(symbols) if symbols else None,
             importance=imp,
+            dedup=bool(dedup),
         )
         return {
             "ok": True,
@@ -325,6 +333,7 @@ def recall(
     limit: int = 5,
     kind: str | None = None,
     path: str | None = None,
+    tags: list[str] | None = None,
     compact: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
@@ -332,7 +341,8 @@ def recall(
 
     Call before non-trivial edits, when restoring project context, or when
     looking for prior decisions/bugs. Ranking is a small-codebase context
-    engine: FTS5 + path/symbol/tag hits + kind/intent + importance (local only).
+    engine: FTS5 + path/symbol/tag hits + kind/intent + importance + recency
+    (local only).
 
     Args:
         query: Natural language or keywords
@@ -341,6 +351,8 @@ def recall(
         limit: Max results (default 5, max 50).
         kind: Optional filter: decision, file_map, bug, convention, etc.
         path: Optional path substring filter (e.g. "src/middleware").
+        tags: Optional hard filter — only memories carrying ALL of these tags
+            (e.g. ["auth", "jwt"]). Combines with kind/path.
         compact: When true, return extractively-compressed snippets (~220
             tokens each) instead of full content — cheaper for the context
             window; recall() again without compact for full detail.
@@ -368,6 +380,7 @@ def recall(
             limit=lim,
             kind=kind,
             path=path,
+            tags=tags,
         )
 
         # Usage feedback for sticky high-value memories

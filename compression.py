@@ -227,6 +227,11 @@ def extractive_compress(
 
 _TOK_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_\-./\\]*")
 
+# Write-time dedup is more conservative than pack-time collapse: merging
+# mutates the vault, so it needs a higher bar than a read-only pack.
+DEDUP_JACCARD_THRESHOLD = 0.55
+DEDUP_PATH_JACCARD_THRESHOLD = 0.35
+
 
 def _content_tokens(text: str) -> set[str]:
     out: set[str] = set()
@@ -236,24 +241,52 @@ def _content_tokens(text: str) -> set[str]:
     return out
 
 
-def _jaccard(a: set[str], b: set[str]) -> float:
-    denom = len(a | b)
-    return (len(a & b) / denom) if denom else 0.0
+def content_similarity(a: Any, b: Any) -> float:
+    """Jaccard overlap of the two memories' content token sets (0..1)."""
+    ta = _content_tokens(getattr(a, "content", "") or "")
+    tb = _content_tokens(getattr(b, "content", "") or "")
+    denom = len(ta | tb)
+    return (len(ta & tb) / denom) if denom else 0.0
 
 
-def _mergeable(a: Any, b: Any, ta: set[str], tb: set[str]) -> bool:
+def is_mergeable(
+    a: Any,
+    b: Any,
+    *,
+    jaccard_threshold: float = JACCARD_THRESHOLD,
+    path_threshold: float = PATH_JACCARD_THRESHOLD,
+) -> bool:
+    """Two memories merge when kind-compatible and either content-similar or
+    sharing a file path with loose content overlap."""
     ka = getattr(a, "kind", "context")
     kb = getattr(b, "kind", "context")
     if ka != kb and {ka, kb} - MERGE_KINDS:
         return False
-    jac = _jaccard(ta, tb)
-    if jac >= JACCARD_THRESHOLD:
+    jac = content_similarity(a, b)
+    if jac >= jaccard_threshold:
         return True
     pa = {p.lower().replace("\\", "/") for p in (getattr(a, "paths", None) or [])}
     pb = {p.lower().replace("\\", "/") for p in (getattr(b, "paths", None) or [])}
-    if pa & pb and jac >= PATH_JACCARD_THRESHOLD:
-        return True
-    return False
+    return bool(pa & pb) and jac >= path_threshold
+
+
+def merge_memories(a: Any, b: Any) -> Any:
+    """Merge *b* into *a*: sentence-deduped content union, union of
+    paths/symbols/tags, max importance, summed access count. Preserves all
+    information from both; safe to persist back (search_doc rebuilt by the
+    caller's update path)."""
+    return _merged(
+        a,
+        content=_merge_content(a, b),
+        paths=_union(getattr(a, "paths", None), getattr(b, "paths", None)),
+        symbols=_union(getattr(a, "symbols", None), getattr(b, "symbols", None)),
+        tags=_union(getattr(a, "tags", None), getattr(b, "tags", None)),
+        importance=max(
+            int(getattr(a, "importance", 3)), int(getattr(b, "importance", 3))
+        ),
+        access_count=int(getattr(a, "access_count", 0))
+        + int(getattr(b, "access_count", 0)),
+    )
 
 
 def _merge_content(a: Any, b: Any) -> str:
@@ -337,7 +370,6 @@ def collapse_redundant(
     if len(memories) < 2:
         return list(memories), 0
     capped = memories[:1500]
-    tok_sets = [_content_tokens(getattr(m, "content", "") or "") for m in capped]
     used = [False] * len(capped)
     out: list[Any] = []
     for i in range(len(capped)):
@@ -347,23 +379,9 @@ def collapse_redundant(
         for j in range(i + 1, len(capped)):
             if used[j]:
                 continue
-            if not _mergeable(rep, capped[j], tok_sets[i], tok_sets[j]):
+            if not is_mergeable(rep, capped[j], jaccard_threshold=threshold):
                 continue
-            rep = _merged(
-                rep,
-                content=_merge_content(rep, capped[j]),
-                paths=_union(getattr(rep, "paths", None), getattr(capped[j], "paths", None)),
-                symbols=_union(
-                    getattr(rep, "symbols", None), getattr(capped[j], "symbols", None)
-                ),
-                tags=_union(getattr(rep, "tags", None), getattr(capped[j], "tags", None)),
-                importance=max(
-                    int(getattr(rep, "importance", 3)),
-                    int(getattr(capped[j], "importance", 3)),
-                ),
-                access_count=int(getattr(rep, "access_count", 0))
-                + int(getattr(capped[j], "access_count", 0)),
-            )
+            rep = merge_memories(rep, capped[j])
             used[j] = True
         out.append(rep)
     return out, len(memories) - len(out)

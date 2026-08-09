@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from compression import (
@@ -393,6 +394,7 @@ class ScoreBreakdown:
     kind: float = 0.0
     importance: float = 0.0
     usage: float = 0.0
+    recency: float = 0.0
     total: float = 0.0
     intent: str = "general"
     reasons: list[str] = field(default_factory=list)
@@ -407,9 +409,21 @@ class ScoreBreakdown:
             "kind": round(self.kind, 4),
             "importance": round(self.importance, 4),
             "usage": round(self.usage, 4),
+            "recency": round(self.recency, 4),
             "intent": self.intent,
             "reasons": self.reasons,
         }
+
+
+def _age_days(ts: str | None) -> float:
+    """Days since a UTC timestamp; large for missing/unparseable values."""
+    if not ts:
+        return 999.0
+    try:
+        dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0)
+    except (ValueError, TypeError):
+        return 999.0
 
 
 def score_memory(
@@ -427,6 +441,8 @@ def score_memory(
     tokens: list[str],
     intent: str,
     query_paths: list[str],
+    created_at: str = "",
+    last_accessed_at: str | None = None,
 ) -> ScoreBreakdown:
     """Composite score for small-repo coding memory.
 
@@ -517,8 +533,24 @@ def score_memory(
     # --- Usage (soft) — frequently recalled memories are sticky ---
     bd.usage = 0.04 * min(1.0, access_count / 10.0)
 
+    # --- Recency (Letta/MemGPT triad: relevance + recency + importance) ---
+    # Fresh notes and recently-revisited notes surface before stale ones.
+    age = _age_days(created_at)
+    bd.recency = 0.05 * max(0.0, 1.0 - age / 28.0)
+    if last_accessed_at and _age_days(last_accessed_at) <= 7.0:
+        bd.recency += 0.03
+    if bd.recency >= 0.04:
+        reasons.append("recent")
+
     bd.total = (
-        bd.fts + bd.path + bd.symbol + bd.tag + bd.kind + bd.importance + bd.usage
+        bd.fts
+        + bd.path
+        + bd.symbol
+        + bd.tag
+        + bd.kind
+        + bd.importance
+        + bd.usage
+        + bd.recency
     )
     # Tiny stable tie-break from fts raw magnitude
     bd.total += min(abs(fts_raw), 10.0) * 1e-5

@@ -51,8 +51,8 @@ Both scripts use temporary DBs — they never touch your real `contextvault.db`.
 | Tool | What it does |
 |------|----------------|
 | `start(agent_id, session_id?, token_budget?)` | Open/resume session; returns a **token-budgeted working context** (verbatim + compressed + coverage index) |
-| `remember(content, kind?, tags?, paths?, symbols?, importance?)` | Store a durable coding memory **locally** |
-| `recall(query, limit?, kind?, path?, compact?)` | Multi-signal retrieval with match reasons; `compact=true` returns ~220-token snippets |
+| `remember(content, kind?, tags?, paths?, symbols?, importance?, dedup?)` | Store a durable coding memory **locally**; near-duplicates auto-merge (mem0-style) |
+| `recall(query, limit?, kind?, path?, tags?, compact?)` | Multi-signal retrieval (FTS5 + path/symbol/tag + intent + importance + recency); `tags` is a hard filter; `compact=true` returns ~220-token snippets |
 | `update(memory_id, content?, kind?, tags?, paths?, symbols?, importance?)` | **Correct** a stale memory (partial update, pass only what changes) — FTS stays in sync |
 | `forget(memory_id)` | **Delete** a memory permanently (scoped to the active agent, no undo) |
 
@@ -67,7 +67,8 @@ For repos under ~50k lines, dense structured memory beats huge chat dumps:
 1. **FTS5** (porter tokenizer) over a denormalized `search_doc` (content + kind + tags + paths + symbols)
 2. **Path / symbol / tag** boosts — "where is auth?" prefers `file_map` + path hits
 3. **Intent routing** — why/bug/style/locate queries boost the right kinds
-4. **Importance + usage** — critical and frequently recalled notes stick
+4. **Importance + usage + recency** — critical, frequently recalled, and fresh
+   notes surface first (the Letta/MemGPT relevance + recency + importance triad)
 5. **Kind diversity** — results aren't five near-duplicate decisions
 6. **Token-budgeted working context** — on `start()`, the WHOLE vault is represented: hot
    memories verbatim, everything else extractively compressed, plus a coverage index of
@@ -97,6 +98,27 @@ Budget knobs: `start(..., token_budget=N)` (256–16000) or env `CONTEXTVAULT_TO
 you want cheap results. Token counting defaults to the offline heuristic; set
 `CONTEXTVAULT_TOKENIZER=tiktoken` (+ `pip install tiktoken`) to count with the real
 cl100k tokenizer instead.
+
+### Memory hygiene (mem0/Letta-inspired)
+
+- **Write-time dedup** — `remember()` first looks for a near-duplicate (same kind +
+  high content overlap, or a shared file path with loose overlap) and **merges into it**
+  instead of inserting: content is sentence-deduped, paths/symbols/tags are unioned,
+  importance is maxed. The response flags `deduplicated: true` + `merged_with`. Pass
+  `dedup=false` only when you deliberately want a similar-looking separate note.
+- **Audit trail** — every created/updated/merged/deleted change is appended to an
+  immutable `memory_events` table (mem0 history / Zep temporal). `start()` returns
+  `recent_events` so the agent sees exactly what changed since its last session.
+- **Recency signal** — fresh notes and recently-revisited notes rank slightly higher,
+  so stale memories sink (Supermemory's "forget what's no longer relevant", done
+  locally without an LLM).
+- **Search filters** — `recall(..., tags=[...])` is a hard filter (mem0 search filters);
+  combines with `kind` and `path`.
+
+> Deliberately *not* copied: mem0's LLM fact-extraction and Zep's knowledge graph — they
+> need an LLM/embedding stack and contradict the zero-network promise. This project stays
+> deterministic and offline; the trade is that memories must be written in reasonably
+> atomic sentences (the tool docs nudge agents to do exactly that).
 
 Everything above runs **locally**. No embeddings, no network for memory.
 
@@ -138,10 +160,13 @@ Optional smaller/larger working-context budget (still local):
 ### Agent workflow
 
 1. `start` with `agent_id` = project name; read `context_pack` — `verbatim` anchors are
-   exact, `compressed` anchors are distilled (call `recall()` for full detail), and
-   `index.paths`/`index.symbols` cover every stored path/symbol.  
-2. `recall` before non-trivial edits — use `compact=True` when you only need cheap hits  
-3. `remember` decisions, file maps, bugs, conventions (with `paths` when you can)  
+   exact, `compressed` anchors are distilled (call `recall()` for full detail),
+   `index.paths`/`index.symbols` cover every stored path/symbol, and `recent_events`
+   shows what changed since your last session.  
+2. `recall` before non-trivial edits — use `compact=True` when you only need cheap hits;
+   add `tags=[...]` to filter  
+3. `remember` decisions, file maps, bugs, conventions (with `paths` when you can) —
+   near-duplicates auto-merge, so re-stating a fact updates it instead of duplicating  
 4. `update(memory_id, …)` to correct a wrong/stale memory instead of re-remembering  
 5. `forget(memory_id)` when a memory is superseded or no longer relevant
 

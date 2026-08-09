@@ -20,21 +20,24 @@ demoable in under 2 minutes (clone → install → connect → use).
    token-budgeted **working context** (verbatim + compressed + coverage index) covering
    everything already known about this agent/context.
 
-2. **`remember(content: str, kind: str | None, tags: list[str] | None, paths: list[str] | None, symbols: list[str] | None, importance: int | None)`**
+2. **`remember(content: str, kind: str | None, tags: list[str] | None, paths: list[str] | None, symbols: list[str] | None, importance: int | None, dedup: bool = True)`**
    Stores a memory. `content` is free text; paths/symbols are auto-extracted. `kind` is
    a coding-memory type (decision, file_map, bug, …); `importance` (1-5, default 3)
-   affects ranking in recall.
+   affects ranking in recall. Near-duplicates **auto-merge** into the existing memory
+   (mem0-style write-time dedup) unless `dedup=False`.
 
-3. **`recall(query: str, limit: int = 5, kind: str | None, path: str | None, compact: bool)`**
-   Retrieves the most relevant stored memories for a query, ranked by relevance and
-   importance. This is the tool agents call constantly — it needs to be fast and actually
-   return useful results, not just keyword-match noise. `compact=true` returns distilled
-   snippets to save tokens.
+3. **`recall(query: str, limit: int = 5, kind: str | None, path: str | None, tags: list[str] | None, compact: bool)`**
+   Retrieves the most relevant stored memories for a query, ranked by relevance,
+   recency, and importance (the Letta triad). This is the tool agents call constantly —
+   it needs to be fast and actually return useful results, not just keyword-match noise.
+   `tags` is a hard filter; `compact=true` returns distilled snippets to save tokens.
 
 4. **`update(memory_id: int, …)`** — partial-update a memory (correct stale notes instead
    of duplicating). Content changes re-run extraction; FTS stays in sync via trigger.
+   Every change is logged to the `memory_events` audit trail.
 
-5. **`forget(memory_id: int)`** — delete a memory permanently, scoped to the active agent.
+5. **`forget(memory_id: int)`** — delete a memory permanently, scoped to the active agent
+   (also logged to the audit trail).
 
 Keep the surface small and sharp; add more tools only when the user explicitly asks.
 

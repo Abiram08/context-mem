@@ -51,11 +51,13 @@ def recall(
     limit: int = 5,
     kind: str | None = None,
     path: str | None = None,
+    tags: list[str] | None = None,
 ) -> list[RankedMemory]:
     """Return top coding memories for *query*, scoped to *agent_id*.
 
     Optimized for small codebases: path/symbol precision and kind diversity
-    matter more than pure BM25 volume.
+    matter more than pure BM25 volume. Optional hard filters: kind, path
+    substring, and tags (ALL requested tags must be present, mem0-style).
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -89,8 +91,20 @@ def recall(
             # Keep higher raw signal
             if raw > by_id[mem.id][0]:
                 by_id[mem.id] = (raw, mem)
+    # Tag filter: guaranteed tag-matching candidates even with zero FTS overlap
+    for raw, mem in _tag_candidates(conn, agent_id, tags, pool, kind_filter):
+        if mem.id not in by_id or raw > by_id[mem.id][0]:
+            by_id[mem.id] = (raw, mem)
 
     ranked_pairs = list(by_id.values())
+    if tags:
+        # Hard filter: ONLY memories carrying every requested tag survive.
+        wanted = {t.lower() for t in tags}
+        ranked_pairs = [
+            (raw, m)
+            for raw, m in ranked_pairs
+            if wanted <= {t.lower() for t in m.tags}
+        ]
     if not ranked_pairs:
         return []
 
@@ -131,6 +145,8 @@ def recall(
             tokens=tokens,
             intent=intent,
             query_paths=query_paths,
+            created_at=mem.created_at,
+            last_accessed_at=mem.last_accessed_at,
         )
         scored.append((mem, bd))
 
@@ -186,6 +202,37 @@ def _fts_candidates(
         bm25_val = float(row["bm25_rank"])
         raw_rel = -bm25_val if bm25_val < 0 else (1.0 / (1.0 + bm25_val))
         out.append((raw_rel, _row_to_memory(row)))
+    return out
+
+
+def _tag_candidates(
+    conn: sqlite3.Connection,
+    agent_id: str,
+    tags: list[str] | None,
+    pool: int,
+    kind_filter: str | None,
+) -> list[tuple[float, Memory]]:
+    """Memories carrying ALL requested tags — a hard filter, not a boost."""
+    if not tags:
+        return []
+    wanted = {t.lower() for t in tags}
+    sql = "SELECT * FROM memories WHERE agent_id = ?"
+    params: list[Any] = [agent_id]
+    if kind_filter:
+        sql += " AND kind = ?"
+        params.append(kind_filter)
+    sql += (
+        " ORDER BY importance DESC, access_count DESC, created_at DESC, id DESC"
+        " LIMIT ?"
+    )
+    params.append(max(pool, 100))
+
+    out: list[tuple[float, Memory]] = []
+    for row in conn.execute(sql, params).fetchall():
+        mem = _row_to_memory(row)
+        have = {t.lower() for t in mem.tags}
+        if wanted <= have:
+            out.append((0.5, mem))
     return out
 
 

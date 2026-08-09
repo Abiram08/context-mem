@@ -39,6 +39,22 @@ CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(agent_id, kind);
 CREATE INDEX IF NOT EXISTS idx_memories_access ON memories(agent_id, access_count DESC);
 
+-- Immutable audit trail of every memory change (mem0/Zep-style history):
+-- lets agents (and developers) see what changed since the last session.
+CREATE TABLE IF NOT EXISTS memory_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  memory_id INTEGER NOT NULL,
+  agent_id TEXT NOT NULL,
+  session_id TEXT,
+  action TEXT NOT NULL CHECK (action IN ('created', 'updated', 'deleted', 'merged')),
+  content_before TEXT,
+  content_after TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_events_agent ON memory_events(agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id);
+
 -- Full-text index over the denormalized search document
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
   search_doc,

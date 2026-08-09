@@ -354,6 +354,85 @@ def main() -> int:
         print(f"    extractive_compress budget  : {used} tokens, {dropped} dropped")
         print(f"    collapse_redundant          : {removed} duplicate merged (symbol union kept)")
 
+        # --- mem0-style: write-time dedup, audit trail, filters, recency ---
+        print("\n[8] mem0-style features (dedup, history, filters, recency)")
+        _reset_session()
+        server.start(agent_id="coding-agent-demo")
+
+        # 1) write-time dedup: near-duplicate remember merges, not duplicates
+        a = server.remember(
+            content="Payment middleware lives in src/middleware/pay.ts and checks HMAC (10m).",
+            kind="file_map", tags=["payments", "hmac"],
+            paths=["src/middleware/pay.ts"], symbols=["verifyHmac"], importance=4,
+        )
+        _assert_ok(a, "remember#dedup-1")
+        id_a = a["memory"]["id"]
+        b = server.remember(
+            content="Payment middleware is in src/middleware/pay.ts; verifies HMAC signatures.",
+            kind="file_map", paths=["src/middleware/pay.ts"], importance=5,
+        )
+        _assert_ok(b, "remember#dedup-2")
+        assert b["memory"]["deduplicated"] is True
+        assert b["memory"]["id"] == id_a, (b["memory"]["id"], id_a)
+        assert b["memory"]["importance"] == 5  # max importance kept
+        assert "payments" in b["memory"]["tags"]  # tag union preserved
+        assert "hmac" in b["memory"]["tags"]
+        # recall still finds the note (merged content + union fields)
+        merged_hits = server.recall(query="payment middleware hmac", limit=3)
+        assert merged_hits["memories"][0]["id"] == id_a
+
+        # dedup=False keeps a deliberately separate note
+        c = server.remember(
+            content="Payment middleware lives in src/middleware/pay.ts and checks HMAC (10m).",
+            kind="file_map", dedup=False,
+        )
+        _assert_ok(c, "remember#dedup-off")
+        assert c["memory"]["deduplicated"] is False
+        assert c["memory"]["id"] != id_a
+
+        # 2) audit trail: start() surfaces recent changes
+        _reset_session()
+        resumed2 = server.start(agent_id="coding-agent-demo")
+        events = resumed2["recent_events"]
+        actions = {e["action"] for e in events}
+        for want in ("created", "updated", "deleted", "merged"):
+            assert any(e["action"] == want for e in events), f"missing {want} event"
+        merged_event = next(e for e in events if e["action"] == "merged")
+        assert "pay.ts" in (merged_event["content_after"] or "")
+
+        # 3) tags filter on recall (hard filter, combines with query)
+        tagged = server.remember(
+            content="Webhooks POST to /hooks/github with an X-Hub-Signature header.",
+            kind="api", tags=["webhooks", "github"], importance=3,
+        )
+        _assert_ok(tagged, "remember#tags")
+        tag_hits = server.recall(query="webhooks", limit=5, tags=["github"])
+        assert tag_hits["count"] >= 1
+        assert all("github" in (m["tags"] or []) for m in tag_hits["memories"])
+        assert tag_hits["memories"][0]["id"] == tagged["memory"]["id"]
+        none_hits = server.recall(
+            query="webhooks", limit=5, tags=["nonexistent-tag"]
+        )
+        assert none_hits["count"] == 0
+
+        # 4) recency signal (Letta triad): fresh beats stale at equal relevance
+        from context_engine import score_memory
+
+        def _scored(created: str) -> float:
+            return score_memory(
+                content="shared note", kind="context", tags=[], paths=[],
+                symbols=[], importance=3, access_count=0, fts_raw=1.0,
+                fts_norm=0.5, query="note", tokens=["note"],
+                intent="general", query_paths=[], created_at=created,
+                last_accessed_at=created,
+            ).recency
+
+        assert _scored("2026-08-09 00:00:00") > _scored("2020-01-01 00:00:00")
+        print("    dedup       : merged into same id (max imp, tag union); dedup=False keeps separate")
+        print("    audit trail : recent_events shows created/updated/merged/deleted")
+        print("    tags filter : hard filter works; unknown tag -> 0 hits")
+        print("    recency     : fresh memory scores higher than stale")
+
         print("\n" + "=" * 60)
         print("All checks passed (local storage + context engine)")
         print("=" * 60)

@@ -11,7 +11,7 @@ import json
 import sqlite3
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,7 +22,14 @@ from context_engine import (
     enrich_memory_fields,
     normalize_kind,
 )
-from compression import DEFAULT_TOKEN_BUDGET
+from compression import (
+    DEDUP_JACCARD_THRESHOLD,
+    DEDUP_PATH_JACCARD_THRESHOLD,
+    DEFAULT_TOKEN_BUDGET,
+    content_similarity,
+    is_mergeable,
+    merge_memories,
+)
 
 
 def _utc_now() -> str:
@@ -59,6 +66,10 @@ class Memory:
     session_id: str | None = None
     access_count: int = 0
     last_accessed_at: str | None = None
+    # Write-time dedup metadata (mem0-style): set when remember() merged this
+    # note into an existing one instead of inserting a duplicate.
+    deduplicated: bool = False
+    merged_with: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +85,8 @@ class Memory:
             "access_count": self.access_count,
             "last_accessed_at": self.last_accessed_at,
             "created_at": self.created_at,
+            "deduplicated": self.deduplicated,
+            "merged_with": self.merged_with,
         }
 
 
@@ -89,6 +102,7 @@ class SessionInfo:
     summary: str
     recent_memories: list[Memory]
     context_pack: dict[str, Any]
+    recent_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 class MemoryStore(ABC):
@@ -116,8 +130,13 @@ class MemoryStore(ABC):
         paths: list[str] | None = None,
         symbols: list[str] | None = None,
         importance: int = 3,
+        dedup: bool = True,
     ) -> Memory:
-        """Persist a structured coding memory for the agent."""
+        """Persist a structured coding memory for the agent.
+
+        With ``dedup=True`` (default), a near-duplicate of an existing memory
+        is merged into it (mem0-style) instead of inserting a duplicate.
+        """
 
     @abstractmethod
     def get_memory(self, memory_id: int) -> Memory | None:
@@ -155,6 +174,10 @@ class MemoryStore(ABC):
     @abstractmethod
     def delete_memory(self, memory_id: int, agent_id: str) -> bool:
         """Delete a memory owned by *agent_id*; False if not found."""
+
+    @abstractmethod
+    def list_events(self, agent_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Recent change history for an agent (newest first)."""
 
     @abstractmethod
     def mark_accessed(self, memory_ids: list[int]) -> None:
@@ -380,6 +403,7 @@ class SQLiteStore(MemoryStore):
             token_budget=token_budget,
         )
         recent = all_for_pack[:5]
+        recent_events = self.list_events(agent_id, limit=10)
 
         return SessionInfo(
             session_id=session_id,
@@ -390,6 +414,7 @@ class SQLiteStore(MemoryStore):
             summary=pack.summary,
             recent_memories=recent,
             context_pack=pack.to_dict(),
+            recent_events=recent_events,
         )
 
     def remember(
@@ -403,6 +428,7 @@ class SQLiteStore(MemoryStore):
         paths: list[str] | None = None,
         symbols: list[str] | None = None,
         importance: int = 3,
+        dedup: bool = True,
     ) -> Memory:
         agent_id = agent_id.strip()
         content = content.strip()
@@ -428,6 +454,36 @@ class SQLiteStore(MemoryStore):
         )
         created = _utc_now()
 
+        # --- mem0-style write-time dedup: merge into a near-duplicate ---
+        if dedup:
+            new_mem = Memory(
+                id=0,
+                agent_id=agent_id,
+                session_id=session_id,
+                content=content,
+                kind=fields["kind"],
+                tags=fields["tags"],
+                paths=fields["paths"],
+                symbols=fields["symbols"],
+                importance=importance,
+                created_at=created,
+            )
+            existing = self._find_merge_candidate(agent_id, new_mem)
+            if existing is not None:
+                merged = merge_memories(existing, new_mem)
+                updated = self.update_memory(
+                    existing.id,
+                    agent_id,
+                    content=merged.content,
+                    kind=merged.kind,
+                    tags=merged.tags,
+                    paths=merged.paths,
+                    symbols=merged.symbols,
+                    importance=merged.importance,
+                    event_action="merged",
+                )
+                return replace(updated, deduplicated=True, merged_with=[existing.id])
+
         cur = self._conn.execute(
             """
             INSERT INTO memories (
@@ -451,6 +507,7 @@ class SQLiteStore(MemoryStore):
         )
         self._conn.commit()
         memory_id = int(cur.lastrowid)
+        self._log_event(memory_id, agent_id, session_id, "created", None, content)
 
         return Memory(
             id=memory_id,
@@ -466,6 +523,81 @@ class SQLiteStore(MemoryStore):
             access_count=0,
             last_accessed_at=None,
         )
+
+    def _find_merge_candidate(self, agent_id: str, new_mem: Memory) -> Memory | None:
+        """Best existing memory to merge *new_mem* into, or None."""
+        rows = self._conn.execute(
+            """
+            SELECT * FROM memories
+            WHERE agent_id = ?
+            ORDER BY importance DESC, access_count DESC, created_at DESC, id DESC
+            LIMIT 300
+            """,
+            (agent_id,),
+        ).fetchall()
+        best: Memory | None = None
+        best_jac = -1.0  # any mergeable candidate qualifies (incl. path merges)
+        for row in rows:
+            existing = _row_to_memory(row)
+            if not is_mergeable(
+                existing,
+                new_mem,
+                jaccard_threshold=DEDUP_JACCARD_THRESHOLD,
+                path_threshold=DEDUP_PATH_JACCARD_THRESHOLD,
+            ):
+                continue
+            jac = content_similarity(existing, new_mem)
+            if jac > best_jac:
+                best, best_jac = existing, jac
+        return best
+
+    def _log_event(
+        self,
+        memory_id: int,
+        agent_id: str,
+        session_id: str | None,
+        action: str,
+        before: str | None,
+        after: str | None,
+    ) -> None:
+        """Append to the immutable memory_events audit trail."""
+        self._conn.execute(
+            """
+            INSERT INTO memory_events
+              (memory_id, agent_id, session_id, action, content_before, content_after)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (memory_id, agent_id, session_id, action, before, after),
+        )
+        self._conn.commit()
+
+    def list_events(
+        self,
+        agent_id: str,
+        *,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT id, memory_id, action, content_before, content_after, created_at
+            FROM memory_events
+            WHERE agent_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (agent_id, limit),
+        ).fetchall()
+        return [
+            {
+                "id": int(r["id"]),
+                "memory_id": int(r["memory_id"]),
+                "action": str(r["action"]),
+                "content_before": r["content_before"],
+                "content_after": r["content_after"],
+                "created_at": str(r["created_at"]),
+            }
+            for r in rows
+        ]
 
     def get_memory(self, memory_id: int) -> Memory | None:
         cur = self._conn.execute(
@@ -523,12 +655,14 @@ class SQLiteStore(MemoryStore):
         paths: list[str] | None = None,
         symbols: list[str] | None = None,
         importance: int | None = None,
+        event_action: str = "updated",
     ) -> Memory:
         """Partial update: pass only the fields that change.
 
         Content changes re-run kind/path/symbol extraction (merged with any
         explicitly passed fields); unmentioned fields keep their values.
-        The memories_au trigger keeps the FTS index in sync automatically.
+        The memories_au trigger keeps the FTS index in sync automatically;
+        every change is appended to the memory_events audit trail.
         """
         row = self._conn.execute(
             "SELECT * FROM memories WHERE id = ? AND agent_id = ?",
@@ -582,19 +716,34 @@ class SQLiteStore(MemoryStore):
             ),
         )
         self._conn.commit()
+        self._log_event(
+            memory_id, agent_id, existing.session_id, event_action,
+            existing.content, new_content,
+        )
         updated = self._conn.execute(
             "SELECT * FROM memories WHERE id = ?", (memory_id,)
         ).fetchone()
         return _row_to_memory(updated)
 
     def delete_memory(self, memory_id: int, agent_id: str) -> bool:
-        """Delete one memory (FTS cleaned up by the memories_ad trigger)."""
-        cur = self._conn.execute(
+        """Delete one memory; logged to the audit trail, FTS cleaned by the
+        memories_ad trigger."""
+        row = self._conn.execute(
+            "SELECT * FROM memories WHERE id = ? AND agent_id = ?",
+            (memory_id, agent_id),
+        ).fetchone()
+        if row is None:
+            return False
+        mem = _row_to_memory(row)
+        self._conn.execute(
             "DELETE FROM memories WHERE id = ? AND agent_id = ?",
             (memory_id, agent_id),
         )
         self._conn.commit()
-        return cur.rowcount > 0
+        self._log_event(
+            memory_id, agent_id, mem.session_id, "deleted", mem.content, None
+        )
+        return True
 
     def mark_accessed(self, memory_ids: list[int]) -> None:
         if not memory_ids:
