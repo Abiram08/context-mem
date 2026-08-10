@@ -1,11 +1,11 @@
 {
   "mcpServers": {
-    "contextvault": {
+    "context-mem": {
       "type": "stdio",
       "command": "Z:/Projects/Working/context-mem/.venv/Scripts/python.exe",
       "args": ["Z:/Projects/Working/context-mem/server.py"],
       "env": {
-        "CONTEXTVAULT_DB": "Z:/Projects/Working/context-mem/contextvault.db"
+        "CONTEXTVAULT_DB": "Z:/Projects/Working/context-mem/context-mem.db"
       }
     }
   }

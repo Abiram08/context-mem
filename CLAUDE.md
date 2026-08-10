@@ -1,10 +1,10 @@
-# CLAUDE.md — ContextVault
+# CLAUDE.md — Context-mem
 
 Instructions for Claude Code (or any agentic coding tool) building this project from scratch.
 
 ## What this is
 
-ContextVault is an MCP (Model Context Protocol) server that gives AI agents persistent
+Context-mem is an MCP (Model Context Protocol) server that gives AI agents persistent
 memory across sessions. Any MCP-compatible client (Claude Code, Claude Desktop, OpenCode,
 Cursor, etc.) can connect to it and call five tools — `start`, `remember`, `recall`,
 `update`, `forget` — to run a memory session, save and correct memories, and recall
@@ -13,52 +13,28 @@ relevant ones later.
 This is a portfolio/demo project. It needs to actually run, be genuinely useful, and be
 demoable in under 2 minutes (clone → install → connect → use).
 
-## Using your memory vault (Claude Code sessions in this repo)
-
-This repo's `.mcp.json` registers ContextVault as an MCP server, so Claude Code
-sessions here get five tools: `start`, `remember`, `recall`, `update`, `forget`.
-
-Recommended rhythm:
-
-1. **`start(agent_id=...)`** at the beginning of a session → read `context_pack`:
-   `verbatim` anchors are exact, `compressed` anchors are distilled (call `recall()`
-   for full detail), `index.paths`/`index.symbols` cover every stored path/symbol,
-   and `recent_events` shows what changed since the last session.
-2. **`recall(query, compact=True)`** before non-trivial edits — cheap hits, then
-   `recall()` without compact when you need full content.
-3. **`remember(...)`** decisions, file maps, bugs, conventions, gotchas as they're
-   discovered — near-duplicates auto-merge, so restating a fact updates it.
-4. **`update(memory_id, ...)`** to correct a stale note; **`forget(memory_id)`** when
-   one is superseded.
-
-The vault is a single local SQLite file (default `contextvault.db` next to
-`server.py`, or per-project via `CLAUDE_PROJECT_DIR`). Never leak it to a cloud.
-
 ## Core tools (the API surface)
-
+C
 1. **`start(agent_id: str, session_id: str | None, token_budget: int | None)`**
    Initializes or resumes a memory context for an agent. Returns a session handle and a
    token-budgeted **working context** (verbatim + compressed + coverage index) covering
    everything already known about this agent/context.
 
-2. **`remember(content: str, kind: str | None, tags: list[str] | None, paths: list[str] | None, symbols: list[str] | None, importance: int | None, dedup: bool = True)`**
+2. **`remember(content: str, kind: str | None, tags: list[str] | None, paths: list[str] | None, symbols: list[str] | None, importance: int | None)`**
    Stores a memory. `content` is free text; paths/symbols are auto-extracted. `kind` is
    a coding-memory type (decision, file_map, bug, …); `importance` (1-5, default 3)
-   affects ranking in recall. Near-duplicates **auto-merge** into the existing memory
-   (mem0-style write-time dedup) unless `dedup=False`.
+   affects ranking in recall.
 
-3. **`recall(query: str, limit: int = 5, kind: str | None, path: str | None, tags: list[str] | None, compact: bool)`**
-   Retrieves the most relevant stored memories for a query, ranked by relevance,
-   recency, and importance (the Letta triad). This is the tool agents call constantly —
-   it needs to be fast and actually return useful results, not just keyword-match noise.
-   `tags` is a hard filter; `compact=true` returns distilled snippets to save tokens.
+3. **`recall(query: str, limit: int = 5, kind: str | None, path: str | None, compact: bool)`**
+   Retrieves the most relevant stored memories for a query, ranked by relevance and
+   importance. This is the tool agents call constantly — it needs to be fast and actually
+   return useful results, not just keyword-match noise. `compact=true` returns distilled
+   snippets to save tokens.
 
 4. **`update(memory_id: int, …)`** — partial-update a memory (correct stale notes instead
    of duplicating). Content changes re-run extraction; FTS stays in sync via trigger.
-   Every change is logged to the `memory_events` audit trail.
 
-5. **`forget(memory_id: int)`** — delete a memory permanently, scoped to the active agent
-   (also logged to the audit trail).
+5. **`forget(memory_id: int)`** — delete a memory permanently, scoped to the active agent.
 
 Keep the surface small and sharp; add more tools only when the user explicitly asks.
 
@@ -66,22 +42,22 @@ Keep the surface small and sharp; add more tools only when the user explicitly a
 
 - **Python 3.11+**
 - **FastMCP** for the MCP server layer (`pip install fastmcp`)
-- **SQLite** for storage (file-based, zero setup — `contextvault.db` in the project root)
+- **SQLite** for storage (file-based, zero setup — `context-mem.db` in the project root)
   - Use plain SQLite for v1, not an ORM. Keep the schema visible and simple.
   - Design the storage layer behind a small interface (`storage.py`) so swapping SQLite
     for Postgres/Supabase later is a one-file change, not a rewrite.
-- **Embeddings for recall**: SQLite FTS5 (full-text search) is the baseline ranking
-  signal and the default — zero keys, zero network. An OPTIONAL semantic re-rank exists
-  in `embeddings.py`, behind `CONTEXTVAULT_EMBEDDINGS=openai|local` (env), so the project
-  still runs with zero external API keys out of the box. Default must never regress to
-  requiring embeddings.
+- **Embeddings for recall**: use a lightweight local embedding approach first —
+  SQLite FTS5 (full-text search) as the baseline ranking signal. If time allows, add a
+  simple embedding-based re-rank (e.g. `sentence-transformers` with a small model, or an
+  API embedding call) behind a feature flag, so the project still runs with zero external
+  API keys out of the box.
 - **No web dashboard for v1.** A CLI smoke-test script is enough. Don't build a frontend
   unless explicitly asked — it's not the point of the demo.
 
 ## Project structure
 
 ```
-contextvault/
+context-mem/
   server.py          # FastMCP entrypoint, tool definitions (5 tools)
   storage.py          # Storage interface + SQLite implementation
   compression.py      # Token estimator, segment splitting, extractive compression, dedupe
@@ -135,7 +111,7 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(content, content='memories', conten
    Follow FastMCP's decorator pattern (`@mcp.tool()`).
 5. `test_client.py` — a script that: starts a session, remembers 3-4 things, recalls
    against a query, and prints what came back. This is the thing to run to prove it works.
-6. Done — `embeddings.py` ships an opt-in semantic re-rank (openai API or local).
+6. Only after all of the above works end-to-end: consider the optional embedding re-rank.
 
 ## MCP client config (for the README, and for testing locally)
 
@@ -144,9 +120,9 @@ Claude Code / Desktop config uses the `mcpServers` key:
 ```json
 {
   "mcpServers": {
-    "contextvault": {
+    "context-mem": {
       "command": "python",
-      "args": ["/absolute/path/to/contextvault/server.py"]
+      "args": ["/absolute/path/to/context-mem/server.py"]
     }
   }
 }

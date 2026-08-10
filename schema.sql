@@ -1,4 +1,4 @@
--- ContextVault schema (SQLite, local-first)
+-- Context-mem schema (SQLite, local-first)
 -- Tuned for coding-agent memory on small codebases (< ~50k LOC).
 -- Swap path: implement MemoryStore against Postgres/Supabase later via storage.py.
 

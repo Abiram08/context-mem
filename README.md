@@ -1,4 +1,4 @@
-# ContextVault
+# Context-mem
 
 **Local MCP memory for coding agents** — with a **small-codebase context engine**.
 
@@ -6,9 +6,9 @@ Any MCP client (Claude Code, Claude Desktop, Cursor, OpenCode, …) can call fiv
 `start`, `remember`, `recall`, `update`, `forget` — and keep durable project knowledge
 across sessions.
 
-| Goal | How ContextVault does it |
+| Goal | How Context-mem does it |
 |------|---------------------------|
-| No data breach via a memory cloud | **SQLite on your machine only** (`contextvault.db`) |
+| No data breach via a memory cloud | **SQLite on your machine only** (`context-mem.db`) |
 | Easy MCP setup | One Python process, no API keys, no Docker |
 | Useful on small repos (&lt; ~50k LOC) | Typed memories, path/symbol ranking, session **context packs** |
 
@@ -16,7 +16,7 @@ across sessions.
 
 ## Install (download & use)
 
-ContextVault is a standalone MCP server — not an AI, not a harness. Just a context
+Context-mem is a standalone MCP server — not an AI, not a harness. Just a context
 layer that keeps a lot in mind and serves it to any MCP client.
 
 **From source (this repo):**
@@ -33,7 +33,7 @@ embedded):
 
 ```bash
 pip install .
-# now `contextvault` runs the server; or connect Claude Code to it (see below)
+# now `context-mem` runs the server; or connect Claude Code to it (see below)
 ```
 
 **Optional extras:** `pip install .[embed]` pulls sentence-transformers for fully-local
@@ -47,7 +47,7 @@ python test_mcp_client.py        # real MCP protocol + concurrent sessions
 python verify_local_memory.py    # proves agent context lands in SQLite on disk
 ```
 
-Both scripts use temporary DBs — they never touch your real `contextvault.db`.
+Both scripts use temporary DBs — they never touch your real `context-mem.db`.
 
 ## Fully local — and proven
 
@@ -157,19 +157,19 @@ configuration never transmits a byte.
 
 Everything above runs **locally**. No embeddings, no network for memory.
 
-## Connect Claude Code to ContextVault
+## Connect Claude Code to Context-mem
 
 This repo ships a committed **`.mcp.json`** — Claude Code auto-loads it whenever it
 runs inside this project. `claude mcp list` should show:
 
 ```text
-contextvault: <venv-python> <repo>/server.py - ✓ Connected
+context-mem: <venv-python> <repo>/server.py - ✓ Connected
 ```
 
 **One-liner for any other project** (keeps this project's paths):
 
 ```bash
-claude mcp add --transport stdio --scope project contextvault -- \
+claude mcp add --transport stdio --scope project context-mem -- \
   Z:/Projects/Working/context-mem/.venv/Scripts/python.exe \
   Z:/Projects/Working/context-mem/server.py
 ```
@@ -182,8 +182,8 @@ order (all local, never a cloud):
 1. `CONTEXTVAULT_DB` env — explicit override, always wins.
 2. `CLAUDE_PROJECT_DIR` — Claude Code sets this on every spawned MCP server, so
    **each project automatically gets its own vault** next to the code it works on
-   (`<project>/contextvault.db`).
-3. Repo root (`contextvault.db` next to `server.py`).
+   (`<project>/context-mem.db`).
+3. Repo root (`context-mem.db` next to `server.py`).
 
 So two different projects can connect to the same server install and each get an
 isolated, project-scoped memory — no shared context leaking between projects.

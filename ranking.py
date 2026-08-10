@@ -1,4 +1,4 @@
-"""Context-engine-backed recall for ContextVault.
+"""Context-engine-backed recall for Context-mem.
 
 Multi-signal ranking for small codebases (< ~50k LOC):
   FTS5 (porter) + path/symbol/tag hits + kind/intent + importance + usage.

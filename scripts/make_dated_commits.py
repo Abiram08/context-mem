@@ -71,7 +71,7 @@ BATCHES: tuple[Batch, ...] = (
     Batch(
         month_day="07-17",
         time="16:05:00",
-        title="Expose ContextVault MCP server, smoke test, and README",
+        title="Expose Context-mem MCP server, smoke test, and README",
         body=(
             "FastMCP tools (start/remember/recall), end-to-end test client,\n"
             "and setup docs for coding agents."

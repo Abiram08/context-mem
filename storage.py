@@ -1,4 +1,4 @@
-"""Storage interface and SQLite implementation for ContextVault.
+"""Storage interface and SQLite implementation for Context-mem.
 
 Local-first by design: all agent memory lives in a single SQLite file.
 Swap this module for a Postgres/Supabase backend later without touching
@@ -40,7 +40,7 @@ def _utc_now() -> str:
 # on disk (a wheel can't place it next to flat modules). Kept in sync by a
 # test; the repo file remains the readable source of truth.
 EMBEDDED_SCHEMA_SQL = """\
--- ContextVault schema (SQLite, local-first)
+-- Context-mem schema (SQLite, local-first)
 -- Tuned for coding-agent memory on small codebases (< ~50k LOC).
 -- Swap path: implement MemoryStore against Postgres/Supabase later via storage.py.
 
@@ -885,8 +885,8 @@ def default_db_path() -> Path:
     """
     here = Path(__file__).resolve().parent
     if (here / "schema.sql").exists() or (here / "pyproject.toml").exists():
-        return here / "contextvault.db"
-    return Path.cwd() / "contextvault.db"
+        return here / "context-mem.db"
+    return Path.cwd() / "context-mem.db"
 
 
 def open_store(db_path: str | Path | None = None) -> SQLiteStore:

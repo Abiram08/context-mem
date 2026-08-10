@@ -58,7 +58,7 @@ def _use_tiktoken() -> bool:
                 import tiktoken  # type: ignore[import-not-found]
 
                 _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
-            except Exception:  # noqa: BLE001 - missing package / vocab
+            except Exception:
                 _tiktoken_enc = None
     return _tiktoken_enc is not None
 
@@ -77,7 +77,7 @@ def estimate_tokens(text: str) -> int:
     if _use_tiktoken():
         try:
             return max(1, len(_tiktoken_enc.encode(text)))
-        except Exception:  # noqa: BLE001 - fall back to heuristic
+        except Exception:
             pass
     n_prose = 0
     n_codey = 0
@@ -86,7 +86,7 @@ def estimate_tokens(text: str) -> int:
             n_codey += 1 + max(0, (len(w) - 8)) // 6
         else:
             n_prose += 1 + max(0, (len(w) - 8)) // 6
-    return max(1, int(round(n_prose * 1.35 + n_codey * 1.0)))
+    return max(1, round(n_prose * 1.35 + n_codey * 1.0))
 
 
 # ---------------------------------------------------------------------------
@@ -95,12 +95,12 @@ def estimate_tokens(text: str) -> int:
 
 _ABBR_RE = re.compile(
     r"\b(?:e\.g\.|i\.e\.|vs\.|etc\.|dr\.|mr\.|mrs\.|ms\.|st\.|approx\.|no\.)\b",
-    re.I,
+    re.IGNORECASE,
 )
 _ABBR_PLACEHOLDER = "\x00abbr\x00"
 _SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9(\[{])")
 # continuation fragments that shouldn't start a new segment
-_FRAGMENT_RE = re.compile(r"^(?:and|but|or|then|which|that|it|this|while|with|to|for)\b", re.I)
+_FRAGMENT_RE = re.compile(r"^(?:and|but|or|then|which|that|it|this|while|with|to|for)\b", re.IGNORECASE)
 
 
 def split_segments(text: str) -> list[str]:
@@ -136,7 +136,7 @@ _SIGNAL_RE = re.compile(
     r"\b(decided|decision|because|must|never|always|root cause|broken|fixed|"
     r"works|lives|located|is|are|was|were|returns|throws|requires|blocks|"
     r"moved|renamed|replaced|migrat|key|main|entrypoint)\b",
-    re.I,
+    re.IGNORECASE,
 )
 
 
@@ -346,9 +346,9 @@ def _merged(m: Any, **overrides: Any) -> Any:
             setattr(ns, name, getattr(m, name, None))
         for name in ("content", "paths", "symbols", "tags"):
             setattr(ns, name, overrides.get(name, getattr(m, name, [])))
-        for name in overrides:
+        for name, value in overrides.items():
             if name not in {"content", "paths", "symbols", "tags"}:
-                setattr(ns, name, overrides[name])
+                setattr(ns, name, value)
         return ns
 
 

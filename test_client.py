@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Smoke test for ContextVault context engine — start → remember → recall.
+"""Smoke test for Context-mem context engine — start → remember → recall.
 
-Runs against a temporary SQLite DB (does not touch production contextvault.db).
+Runs against a temporary SQLite DB (does not touch production context-mem.db).
 Usage:
     python test_client.py
 """
@@ -36,7 +36,7 @@ def main() -> int:
             pass
 
     with tempfile.TemporaryDirectory(
-        prefix="contextvault-test-",
+        prefix="context-mem-test-",
         ignore_cleanup_errors=True,
     ) as tmp:
         db_path = Path(tmp) / "test.db"
@@ -50,7 +50,7 @@ def main() -> int:
         _reset_session()
 
         print("=" * 60)
-        print("ContextVault context-engine smoke test")
+        print("Context-mem context-engine smoke test")
         print(f"DB: {db_path}")
         print("=" * 60)
 
@@ -85,7 +85,7 @@ def main() -> int:
             },
             {
                 "content": (
-                    "Decision: keep agent memory in local SQLite (contextvault.db), "
+                    "Decision: keep agent memory in local SQLite (context-mem.db), "
                     "not Supabase, so coding-agent data never leaves the machine. "
                     "Storage is behind MemoryStore for a future optional remote backend."
                 ),

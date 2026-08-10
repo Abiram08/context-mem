@@ -85,9 +85,9 @@ class OpenAIEmbedder(_BaseEmbedder):
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310 - user opted in
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise EmbedderError(f"embedding request failed: {exc}") from exc
             if "data" not in data:
                 raise EmbedderError(f"embedding response missing 'data': {data}")
@@ -109,15 +109,17 @@ class LocalEmbedder(_BaseEmbedder):
     def _get_enc(self) -> Any:
         if self._enc is None:
             try:
-                from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
+                from sentence_transformers import (
+                    SentenceTransformer,  # type: ignore[import-not-found]
+                )
             except ImportError as exc:  # pragma: no cover - env-dependent
                 raise EmbedderError(
                     "local embeddings need 'sentence-transformers' "
-                    "(pip install 'contextvault[embed]')"
+                    "(pip install 'context-mem[embed]')"
                 ) from exc
             try:
                 self._enc = SentenceTransformer(self.model)
-            except Exception as exc:  # noqa: BLE001 - model download/load
+            except Exception as exc:
                 raise EmbedderError(f"failed to load model {self.model!r}: {exc}") from exc
         return self._enc
 
@@ -125,7 +127,7 @@ class LocalEmbedder(_BaseEmbedder):
         enc = self._get_enc()
         try:
             vecs = enc.encode(texts, normalize_embeddings=True)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise EmbedderError(f"local embedding failed: {exc}") from exc
         return [[float(v) for v in row] for row in vecs]
 

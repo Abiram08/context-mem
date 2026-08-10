@@ -33,7 +33,7 @@ if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -52,14 +52,14 @@ def _json(result: object) -> dict:
 
 async def main() -> int:
     with tempfile.TemporaryDirectory(
-        prefix="contextvault-mcp-",
+        prefix="context-mem-mcp-",
         ignore_cleanup_errors=True,
     ) as tmp:
         db_path = Path(tmp) / "mcp.db"
         os.environ["CONTEXTVAULT_DB"] = str(db_path)
 
         print("=" * 60)
-        print("ContextVault real MCP-protocol round trip (stdio)")
+        print("Context-mem real MCP-protocol round trip (stdio)")
         print(f"DB: {db_path}")
         print("=" * 60)
 
@@ -72,7 +72,7 @@ async def main() -> int:
             # the real default vault.
             return {
                 "mcpServers": {
-                    "contextvault": {
+                    "context-mem": {
                         "command": sys.executable,
                         "args": [str(ROOT / "server.py")],
                         "env": {**os.environ, "CONTEXTVAULT_DB": str(db_path)},

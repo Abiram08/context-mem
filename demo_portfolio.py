@@ -55,7 +55,7 @@ def c(color: str, text: str) -> str:
 def banner() -> None:
     print()
     print(c("cyan", "  ╔══════════════════════════════════════════════════════════╗"))
-    print(c("cyan", "  ║") + c("bold", "  ContextVault") + c("dim", "  ·  local MCP memory for coding agents  ") + c("cyan", "║"))
+    print(c("cyan", "  ║") + c("bold", "  Context-mem") + c("dim", "  ·  local MCP memory for coding agents  ") + c("cyan", "║"))
     print(c("cyan", "  ║") + c("gray", "  SQLite  ·  FTS5 context engine  ·  no cloud  ·  5 tools  ") + c("cyan", "║"))
     print(c("cyan", "  ╚══════════════════════════════════════════════════════════╝"))
     print()
@@ -75,7 +75,7 @@ def dim(msg: str) -> None:
 
 def main() -> int:
     with tempfile.TemporaryDirectory(
-        prefix="contextvault-demo-",
+        prefix="context-mem-demo-",
         ignore_cleanup_errors=True,
     ) as tmp:
         db_path = Path(tmp) / "portfolio.db"

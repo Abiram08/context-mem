@@ -6,7 +6,7 @@ Spawns server.py over stdio using the EXACT config from this repo's .mcp.json
 then opens the SQLite vault directly to show the on-disk rows and audit trail.
 A fresh process reconnects to confirm the context pack rebuilds from disk.
 
-Uses a temporary vault — never touches the real contextvault.db.
+Uses a temporary vault — never touches the real context-mem.db.
 
 Usage:
     python verify_local_memory.py
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sqlite3
 import sys
 import tempfile
@@ -30,7 +29,7 @@ if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -76,13 +75,13 @@ async def _round_trip(client: object) -> None:
 
 async def main() -> int:
     mcp_cfg = json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8"))
-    server_cfg = mcp_cfg["mcpServers"]["contextvault"]
+    server_cfg = mcp_cfg["mcpServers"]["context-mem"]
     print("Using Claude Code config from:", ROOT / ".mcp.json")
     print(f"  command : {server_cfg['command']}")
     print(f"  args    : {server_cfg['args']}")
 
     with tempfile.TemporaryDirectory(
-        prefix="contextvault-verify-",
+        prefix="context-mem-verify-",
         ignore_cleanup_errors=True,
     ) as tmp:
         vault = Path(tmp) / "claude-code-vault.db"
@@ -93,7 +92,7 @@ async def main() -> int:
                 "CONTEXTVAULT_DB": str(vault),
             },
         }
-        client_cfg = {"mcpServers": {"contextvault": cfg}}
+        client_cfg = {"mcpServers": {"context-mem": cfg}}
 
         from fastmcp import Client
 

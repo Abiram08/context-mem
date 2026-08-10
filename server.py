@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""ContextVault MCP server — local coding-agent memory + small-repo context engine.
+"""Context-mem MCP server — local coding-agent memory + small-repo context engine.
 
 Five tools: start, remember, recall, update, forget.
-All memory is stored in local SQLite (contextvault.db) — no cloud required.
+All memory is stored in local SQLite (context-mem.db) — no cloud required.
 Tuned for small codebases (< ~50k lines): path/symbol-aware ranking and
 token-budgeted working-context packs.
 """
@@ -22,9 +22,9 @@ from ranking import recall as rank_recall
 from storage import MemoryStore, SQLiteStore, default_db_path, open_store
 
 mcp = FastMCP(
-    name="contextvault",
+    name="context-mem",
     instructions=(
-        "ContextVault is a LOCAL persistent memory vault for coding agents on "
+        "Context-mem is a LOCAL persistent memory vault for coding agents on "
         "small codebases (<~50k LOC). Data never leaves the machine (SQLite). "
         "Workflow: call start() once per session to load a token-budgeted "
         "working context; remember() durable decisions, file maps, bugs, "
@@ -69,7 +69,7 @@ def _resolve_db_path() -> str:
         return explicit
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
     if project_dir:
-        return str(Path(project_dir) / "contextvault.db")
+        return str(Path(project_dir) / "context-mem.db")
     return str(default_db_path())
 
 
