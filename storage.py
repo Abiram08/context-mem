@@ -12,16 +12,10 @@ import sqlite3
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from context_engine import (
-    build_context_pack,
-    build_search_doc,
-    enrich_memory_fields,
-    normalize_kind,
-)
 from compression import (
     DEDUP_JACCARD_THRESHOLD,
     DEDUP_PATH_JACCARD_THRESHOLD,
@@ -30,10 +24,16 @@ from compression import (
     is_mergeable,
     merge_memories,
 )
+from context_engine import (
+    build_context_pack,
+    build_search_doc,
+    enrich_memory_fields,
+    normalize_kind,
+)
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # Embedded copy of schema.sql so `pip install`ed copies run without the file

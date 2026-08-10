@@ -47,6 +47,11 @@ Thumbs.db
 Desktop.ini
 .idea/
 .vscode/
+.claude/
+.cursor/
+.opencode/
+opencode.json
+opencode.jsonc
 *.swp
 *.swo
 *~

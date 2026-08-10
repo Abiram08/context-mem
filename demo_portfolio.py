@@ -29,7 +29,7 @@ if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 # ANSI (works in Windows Terminal / modern PowerShell)
@@ -230,6 +230,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"\nDEMO FAILED: {exc}", file=sys.stderr)
         raise

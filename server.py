@@ -117,7 +117,7 @@ def _get_embedder() -> tuple[Any | None, str | None]:
             try:
                 _embedder = get_embedder()
                 _embedder_status = "openai" if mode in ("openai", "api") else "local"
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 _embedder_status = str(exc)
         else:
             _embedder_status = None
@@ -197,7 +197,7 @@ def start(
         }
     except ValueError as e:
         return _err(str(e))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return _err(f"Failed to start session: {e}")
 
 
@@ -268,7 +268,7 @@ def remember(
         return _err(str(e))
     except ValueError as e:
         return _err(str(e))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return _err(f"Failed to store memory: {e}")
 
 
@@ -332,7 +332,7 @@ def update(
         }
     except (RuntimeError, ValueError) as e:
         return _err(str(e))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return _err(f"Failed to update memory: {e}")
 
 
@@ -369,7 +369,7 @@ def forget(
         }
     except (RuntimeError, ValueError) as e:
         return _err(str(e))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return _err(f"Failed to forget memory: {e}")
 
 
@@ -459,7 +459,7 @@ def recall(
         return _err(str(e))
     except ValueError as e:
         return _err(str(e))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return _err(f"Failed to recall memories: {e}")
 
 

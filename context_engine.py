@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Iterable
+from datetime import UTC, datetime
+from typing import Any
 
 from compression import (
     DEFAULT_TOKEN_BUDGET,
@@ -92,19 +93,19 @@ _INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(
             r"\b(where|which file|path to|located|lives in|find file|"
             r"look for|entrypoint|entry point)\b",
-            re.I,
+            re.IGNORECASE,
         ),
     ),
     (
         "why",
-        re.compile(r"\b(why|reason|rationale|decided|decision|chose|instead of)\b", re.I),
+        re.compile(r"\b(why|reason|rationale|decided|decision|chose|instead of)\b", re.IGNORECASE),
     ),
     (
         "bug",
         re.compile(
             r"\b(bug|fix|broken|error|exception|crash|regression|root cause|"
             r"failing|issue)\b",
-            re.I,
+            re.IGNORECASE,
         ),
     ),
     (
@@ -112,7 +113,7 @@ _INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(
             r"\b(convention|style|prefer|preference|format|lint|naming|"
             r"commit message|type hint)\b",
-            re.I,
+            re.IGNORECASE,
         ),
     ),
     (
@@ -120,7 +121,7 @@ _INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(
             r"\b(api|endpoint|route|handler|signature|public function|"
             r"interface|contract)\b",
-            re.I,
+            re.IGNORECASE,
         ),
     ),
     (
@@ -128,26 +129,26 @@ _INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(
             r"\b(architecture|layer|stack|structure|system design|"
             r"data flow|module|package layout)\b",
-            re.I,
+            re.IGNORECASE,
         ),
     ),
     (
         "open_work",
-        re.compile(r"\b(todo|to-do|leftover|unfinished|next step|backlog)\b", re.I),
+        re.compile(r"\b(todo|to-do|leftover|unfinished|next step|backlog)\b", re.IGNORECASE),
     ),
 ]
 
 # Kind inference from free text when the agent omits `kind`
 _KIND_HINTS: list[tuple[str, re.Pattern[str]]] = [
-    ("file_map", re.compile(r"\b(lives in|located in|file(s)?|path|src/|lib/|\.tsx?\b|\.py\b|\.go\b)", re.I)),
-    ("bug", re.compile(r"\b(bug|fix|root cause|regression|crash|broke)\b", re.I)),
-    ("decision", re.compile(r"\b(decided|decision|we chose|instead of|trade-?off)\b", re.I)),
-    ("convention", re.compile(r"\b(convention|always|never|must|style|prefer)\b", re.I)),
-    ("preference", re.compile(r"\b(user prefers|prefer(s|ence)?|don't|do not)\b", re.I)),
-    ("gotcha", re.compile(r"\b(gotcha|pitfall|footgun|watch out|careful|non-obvious)\b", re.I)),
-    ("architecture", re.compile(r"\b(architecture|layer|stack|pipeline|data flow)\b", re.I)),
-    ("api", re.compile(r"\b(endpoint|route|API|handler|public)\b", re.I)),
-    ("todo", re.compile(r"\b(TODO|FIXME|still need|follow-?up|later:)\b", re.I)),
+    ("file_map", re.compile(r"\b(lives in|located in|file(s)?|path|src/|lib/|\.tsx?\b|\.py\b|\.go\b)", re.IGNORECASE)),
+    ("bug", re.compile(r"\b(bug|fix|root cause|regression|crash|broke)\b", re.IGNORECASE)),
+    ("decision", re.compile(r"\b(decided|decision|we chose|instead of|trade-?off)\b", re.IGNORECASE)),
+    ("convention", re.compile(r"\b(convention|always|never|must|style|prefer)\b", re.IGNORECASE)),
+    ("preference", re.compile(r"\b(user prefers|prefer(s|ence)?|don't|do not)\b", re.IGNORECASE)),
+    ("gotcha", re.compile(r"\b(gotcha|pitfall|footgun|watch out|careful|non-obvious)\b", re.IGNORECASE)),
+    ("architecture", re.compile(r"\b(architecture|layer|stack|pipeline|data flow)\b", re.IGNORECASE)),
+    ("api", re.compile(r"\b(endpoint|route|API|handler|public)\b", re.IGNORECASE)),
+    ("todo", re.compile(r"\b(TODO|FIXME|still need|follow-?up|later:)\b", re.IGNORECASE)),
 ]
 
 # Paths like src/foo/bar.ts, server.py, .\lib\x.py, packages/a/b
@@ -165,14 +166,14 @@ _PATH_RE = re.compile(
     # bare filename with a known code extension
     rf"|[\w.-]+\.({_CODE_EXTS})"
     rf")\b",
-    re.I,
+    re.IGNORECASE,
 )
 # Extensionless dir paths only if they start with common roots
 _DIR_PATH_RE = re.compile(
     r"\b(?:src|lib|app|pkg|packages|internal|cmd|scripts|tests?|docs?|"
     r"components|hooks|utils|services|middleware|api|core|modules)"
     r"(?:/[\w.-]+){1,6}\b",
-    re.I,
+    re.IGNORECASE,
 )
 
 _SYMBOL_RE = re.compile(
@@ -197,7 +198,7 @@ _STOPWORDS = frozenset(
         "find", "get", "show", "tell", "know", "need", "want", "like", "look",
         "looking", "related", "regarding", "memory", "memories", "recall",
         "remember", "code", "codebase", "project", "file", "files", "thing",
-        "things", "stuff", "there", "here", "does", "work", "works", "working",
+        "things", "stuff", "there", "here", "work", "works", "working",
     }
 )
 
@@ -422,8 +423,8 @@ def _age_days(ts: str | None) -> float:
     if not ts:
         return 999.0
     try:
-        dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-        return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0)
+        dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        return max(0.0, (datetime.now(UTC) - dt).total_seconds() / 86400.0)
     except (ValueError, TypeError):
         return 999.0
 

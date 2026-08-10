@@ -181,7 +181,7 @@ def recall(
                 if sim >= 0.55:
                     bd.reasons.append(f"semantic {sim:.2f}")
             scored.sort(key=lambda x: x[1].total, reverse=True)
-        except Exception:  # noqa: BLE001 - any embedder failure -> lexical only
+        except Exception:
             pass
 
     diversified = diversify(scored, limit=limit, max_per_kind=max(2, limit // 2))
@@ -246,7 +246,7 @@ def _vector_for(embedder: Any, mem: Memory) -> list[float] | None:
         return entry[1]
     try:
         vec = embedder.embed_texts([mem.content])[0]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     _vector_cache[mem.id] = (h, vec)
     return vec

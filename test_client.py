@@ -32,7 +32,7 @@ def main() -> int:
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
             sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     with tempfile.TemporaryDirectory(
@@ -349,7 +349,7 @@ def main() -> int:
         merged, removed = collapse_redundant([m1, m2])
         assert removed == 1 and len(merged) == 1
         assert "verifyJwt" in merged[0].symbols  # union preserved
-        print(f"    estimate_tokens monotonic   : ok")
+        print("    estimate_tokens monotonic   : ok")
         print(f"    split_segments path-safe    : {len(segs)} segments")
         print(f"    extractive_compress budget  : {used} tokens, {dropped} dropped")
         print(f"    collapse_redundant          : {removed} duplicate merged (symbol union kept)")
@@ -444,9 +444,9 @@ def main() -> int:
         # installed wheels use the embedded schema — must stay in sync
         from storage import EMBEDDED_SCHEMA_SQL
 
-        assert EMBEDDED_SCHEMA_SQL == (
+        assert (
             Path(__file__).resolve().parent / "schema.sql"
-        ).read_text(encoding="utf-8")
+        ).read_text(encoding="utf-8") == EMBEDDED_SCHEMA_SQL
 
         # recall reports embeddings=off by default (zero keys, zero network)
         assert server.recall(query="anything", limit=1)["embeddings"] == "off"
@@ -530,6 +530,6 @@ def _assert_ok(result: dict, label: str) -> None:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"\nSMOKE TEST FAILED: {exc}", file=sys.stderr)
         raise
